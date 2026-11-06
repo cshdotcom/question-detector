@@ -17,6 +17,7 @@ import {
   Undo2,
   Redo2,
   Wand2,
+  Download,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore, sanitizeBBox } from "@/lib/store"
@@ -25,6 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { cn, clamp } from "@/lib/utils"
 import type { Question } from "@/lib/types"
+import { ExportMenu } from "./ExportMenu"
 
 type DragMode =
   | { kind: "move"; qid: string; startX: number; startY: number; origBBox: Question["bbox"] }
@@ -329,6 +331,8 @@ export function QuestionCanvas() {
           {detecting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           <span className="ml-1">{detecting ? "识别中…" : "AI 识别"}</span>
         </Button>
+        <div className="h-4 w-px bg-border shrink-0" />
+        <ExportMenu currentImageOnly />
         <div className="h-4 w-px bg-border shrink-0 ml-auto" />
         <div className="flex items-center gap-0.5 shrink-0">
           <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => setZoom((z) => clamp(z - 0.2, 1, 4))} title="缩小 -">
@@ -395,6 +399,15 @@ export function QuestionCanvas() {
           onPointerCancel={onPointerUp}
           onDoubleClick={onDoubleClick}
         >
+          {/* 主图片 + 图层容器：旋转应用到容器，确保 img 和图层对齐 */}
+          <div
+            className="relative inline-block"
+            style={{
+              transform: `rotate(${adj.rotation}deg)`,
+              transformOrigin: "center center",
+              transition: "transform 0.2s ease-out",
+            }}
+          >
           {/* 主图片 */}
           <img
             ref={imgRef}
@@ -404,7 +417,6 @@ export function QuestionCanvas() {
             className="block max-w-full object-contain pointer-events-none"
             style={{
               filter,
-              transform: `rotate(${adj.rotation}deg)`,
               maxHeight: "calc(100dvh - 220px)",
               maxWidth: "100%",
             }}
@@ -530,6 +542,7 @@ export function QuestionCanvas() {
               )}
             </div>
           )}
+          </div>{/* 旋转容器结束 */}
         </div>
       </div>
 

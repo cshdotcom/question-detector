@@ -69,16 +69,29 @@ ${PROMPT}`
     const messages: ChatMessage[] = [{ role: "user", content: parts }]
     const result = await callVisionChat(messages, { config, maxTokens: 4096 })
 
-    // 提取 JSON
+    // 提取 JSON（容错：处理 markdown 代码块、中文标点、嵌套对象）
     let grading: GradingResult
-    const txt = result.content.trim()
-    const start = txt.indexOf("{")
-    const end = txt.lastIndexOf("}")
+    const txt = (result.content || "").trim()
+    // 去掉 markdown 代码块
+    const cleaned = txt.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim()
+    const start = cleaned.indexOf("{")
+    const end = cleaned.lastIndexOf("}")
     if (start !== -1 && end !== -1 && end > start) {
       try {
-        const parsed = JSON.parse(txt.slice(start, end + 1))
+        // 尝试修复常见 JSON 错误：中文引号、尾随逗号
+        let jsonStr = cleaned.slice(start, end + 1)
+          .replace(/[\u201c\u201d]/g, '"')  // 中文双引号
+          .replace(/[\u2018\u2019]/g, "'")  // 中文单引号
+          .replace(/,\s*}/g, "}")  // 尾随逗号
+          .replace(/,\s*]/g, "]")
+        const parsed = JSON.parse(jsonStr)
+        // correct 字段可能返回字符串 "true"/"false"/"partial"
+        let correctVal: boolean | "partial" = false
+        if (parsed.correct === true || parsed.correct === "true") correctVal = true
+        else if (parsed.correct === "partial") correctVal = "partial"
+        else correctVal = false
         grading = {
-          correct: parsed.correct === true ? true : parsed.correct === "partial" ? "partial" : false,
+          correct: correctVal,
           score: typeof parsed.score === "number" ? parsed.score : undefined,
           studentAnswer: parsed.studentAnswer,
           correctAnswer: parsed.correctAnswer,

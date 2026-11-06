@@ -73,15 +73,9 @@ export async function detectQuestionsOffline(
     rowInk[y] = ink
   }
 
-  // 2. 用 Otsu 思路选阈值：找使前景/背景方差最大的阈值，简化版用直方图
-  const hist = new Array(Math.min(w, 256)).fill(0)
-  for (let y = 0; y < h; y++) {
-    const bin = Math.min(hist.length - 1, Math.floor((rowInk[y] / w) * hist.length))
-    hist[bin]++
-  }
-  // 找密度直方图的"谷"——大部分行是低密度（白），少数行是高密度（黑字）
-  // 行被判定为"有内容"的阈值：墨水量大于 max(3, w * 0.005)（即 0.5% 的像素是墨水）
-  const rowThreshold = Math.max(3, Math.floor(w * 0.005))
+  // 2. 行判定阈值：墨水量大于 max(2, w * 0.003)（即 0.3% 的像素是墨水）
+  //    小图（如 400px 宽）也要至少 2 像素才算有内容
+  const rowThreshold = Math.max(2, Math.floor(w * 0.003))
 
   // 3. 找连续的内容块（先用 lineMergeGap 合并相邻行）
   const lineMergeGapPx = Math.max(2, Math.floor(lineMergeGap * h))

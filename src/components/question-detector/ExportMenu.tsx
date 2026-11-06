@@ -12,6 +12,8 @@ import {
   Loader2,
   Images,
   ImageIcon,
+  CheckSquare,
+  Square,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
@@ -28,91 +30,170 @@ import {
   DropdownMenuSubTrigger,
 } from "@/components/ui/dropdown-menu"
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
   cropToDataUrl,
   dataUrlToBlob,
   downloadBlob,
   buildExportData,
 } from "@/lib/image-utils"
 import { renderImageWithBoxes } from "@/lib/merge-images"
+import { renderQuestionToCanvas, renderImageFullPage } from "@/lib/render-question"
 
-export function ExportMenu() {
+interface ExportMenuProps {
+  /** 限制只导出当前图片（当页导出） */
+  currentImageOnly?: boolean
+}
+
+export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
   const images = useDetectorStore((s) => s.images)
+  const currentImageId = useDetectorStore((s) => s.currentImageId)
   const [busy, setBusy] = useState(false)
-  const [exportDialogOpen, setExportDialogOpen] = useState(false)
+  const [selectImagesOpen, setSelectImagesOpen] = useState(false)
+  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
+  const [pendingAction, setPendingAction] = useState<"pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped" | null>(null)
+
+  // 当前要导出的图片列表
+  const targetImages = currentImageOnly
+    ? images.filter((im) => im.id === currentImageId)
+    : selectedImageIds.size > 0
+    ? images.filter((im) => selectedImageIds.has(im.id))
+    : images
+
+  // 打开"选择图片"对话框
+  const openSelectImages = (action: "pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped") => {
+    if (currentImageOnly) {
+      // 当页导出直接执行
+      runExport(action, images.filter((im) => im.id === currentImageId))
+      return
+    }
+    if (images.length === 0) {
+      toast.error("没有图片可导出")
+      return
+    }
+    setPendingAction(action)
+    setSelectedImageIds(new Set(images.map((im) => im.id))) // 默认全选
+    setSelectImagesOpen(true)
+  }
+
+  const confirmSelectAndExport = async () => {
+    setSelectImagesOpen(false)
+    if (selectedImageIds.size === 0) {
+      toast.error("请至少选择一张图片")
+      return
+    }
+    const targets = images.filter((im) => selectedImageIds.has(im.id))
+    if (pendingAction) {
+      await runExport(pendingAction, targets)
+    }
+    setPendingAction(null)
+  }
+
+  const toggleImage = (id: string) => {
+    setSelectedImageIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectAll = () => setSelectedImageIds(new Set(images.map((im) => im.id)))
+  const selectNone = () => setSelectedImageIds(new Set())
+
+  const runExport = async (
+    action: "pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped",
+    targets: typeof images
+  ) => {
+    if (targets.length === 0) {
+      toast.error("没有图片可导出")
+      return
+    }
+    if (action === "json") return exportJson(targets)
+    if (action === "markdown") return exportMarkdown(targets)
+    if (action === "excel") return exportExcel(targets)
+    if (action === "boxes") return exportWithBoxes(targets, true)
+    if (action === "cropped") return exportCroppedImages(targets, true)
+    if (action === "pdf") return exportPDF(targets)
+    if (action === "word") return exportWord(targets)
+  }
 
   // ===== JSON =====
-  const exportJson = () => {
-    const data = buildExportData(images)
+  const exportJson = (targets: typeof images) => {
+    const data = buildExportData(targets)
     const jsonStr = JSON.stringify(data, null, 2)
     const blob = new Blob(["\uFEFF" + jsonStr], { type: "application/json;charset=utf-8" })
     downloadBlob(blob, `questions-${Date.now()}.json`)
-    toast.success("已导出 JSON")
+    toast.success(`已导出 ${targets.length} 张图的 JSON`)
   }
 
   // ===== Markdown =====
-  const exportMarkdown = () => {
+  const exportMarkdown = (targets: typeof images) => {
     const lines: string[] = ["# 题目识别结果", ""]
-    if (images.length === 0) {
-      lines.push("（暂无图片）")
-    } else {
-      images.forEach((img, i) => {
-        lines.push(`## 图片 ${i + 1}：${img.name}`)
+    targets.forEach((img, i) => {
+      lines.push(`## 图片 ${i + 1}：${img.name}`)
+      lines.push("")
+      const passages = img.questions.filter((q) => q.kind === "passage")
+      passages.forEach((p) => {
+        lines.push(`### 阅读材料`)
         lines.push("")
-        const passages = img.questions.filter((q) => q.kind === "passage")
-        passages.forEach((p) => {
-          lines.push(`### 阅读材料`)
-          lines.push("")
-          lines.push(p.content || "（无内容）")
-          lines.push("")
-        })
-        if (img.questions.length === 0) {
-          lines.push("_未识别到题目_")
-        } else {
-          img.questions
-            .filter((q) => q.kind !== "passage")
-            .forEach((q, qi) => {
-              const num = q.number ? `（${q.number}）` : `（${qi + 1}）`
-              lines.push(`### 第 ${qi + 1} 题 ${num}`)
-              lines.push("")
-              if (q.kind === "passage_question" && q.passageId) {
-                const passage = img.questions.find((x) => x.id === q.passageId)
-                if (passage) {
-                  lines.push("> **阅读材料：**")
-                  lines.push(">")
-                  lines.push(`> ${passage.content.replace(/\n/g, "\n> ")}`)
-                  lines.push("")
-                }
-              }
-              lines.push(q.content || "_（无内容）_")
-              lines.push("")
-              if (q.images.length > 0) {
-                lines.push(`> 配图 ${q.images.length} 张`)
-                lines.push("")
-              }
-              if (q.grading) {
-                lines.push(`**批改结果：** ${q.grading.correct === true ? "✓ 正确" : q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"}`)
-                if (q.grading.correctAnswer) {
-                  lines.push(`**正确答案：** ${q.grading.correctAnswer}`)
-                }
-                lines.push("")
-                lines.push("**解析：**")
-                lines.push("")
-                lines.push(q.grading.explanation)
-                lines.push("")
-              }
-            })
-        }
+        lines.push(p.content || "（无内容）")
         lines.push("")
       })
-    }
+      if (img.questions.length === 0) {
+        lines.push("_未识别到题目_")
+      } else {
+        img.questions
+          .filter((q) => q.kind !== "passage")
+          .forEach((q, qi) => {
+            const num = q.number ? `（${q.number}）` : `（${qi + 1}）`
+            lines.push(`### 第 ${qi + 1} 题 ${num}`)
+            lines.push("")
+            if (q.kind === "passage_question" && q.passageId) {
+              const passage = img.questions.find((x) => x.id === q.passageId)
+              if (passage) {
+                lines.push("> **阅读材料：**")
+                lines.push(">")
+                lines.push(`> ${passage.content.replace(/\n/g, "\n> ")}`)
+                lines.push("")
+              }
+            }
+            lines.push(q.content || "_（无内容）_")
+            lines.push("")
+            if (q.images.length > 0) {
+              lines.push(`> 配图 ${q.images.length} 张`)
+              lines.push("")
+            }
+            if (q.grading) {
+              lines.push(`**批改结果：** ${q.grading.correct === true ? "✓ 正确" : q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"}`)
+              if (q.grading.correctAnswer) {
+                lines.push(`**正确答案：** ${q.grading.correctAnswer}`)
+              }
+              lines.push("")
+              lines.push("**解析：**")
+              lines.push("")
+              lines.push(q.grading.explanation)
+              lines.push("")
+            }
+          })
+      }
+      lines.push("")
+    })
     const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/markdown;charset=utf-8" })
     downloadBlob(blob, `questions-${Date.now()}.md`)
-    toast.success("已导出 Markdown")
+    toast.success(`已导出 ${targets.length} 张图的 Markdown`)
   }
 
   // ===== 复制全部题文 =====
   const copyAll = async () => {
-    const text = images
+    const text = targetImages
       .flatMap((img, i) => {
         const passages = img.questions.filter((q) => q.kind === "passage")
         const out: string[] = []
@@ -145,31 +226,30 @@ export function ExportMenu() {
     }
   }
 
-  // ===== 导出所有题目截图（含配图） =====
-  const exportCroppedImages = async (includeSubImages: boolean) => {
-    if (images.length === 0) {
+  // ===== 题目截图 + 配图 =====
+  const exportCroppedImages = async (targets: typeof images, includeSubImages: boolean) => {
+    if (targets.length === 0) {
       toast.error("没有图片可导出")
       return
     }
     setBusy(true)
     toast.info("开始导出题目截图…")
     let count = 0
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i]
+    for (let i = 0; i < targets.length; i++) {
+      const img = targets[i]
       for (let j = 0; j < img.questions.length; j++) {
         const q = img.questions[j]
         if (q.kind === "passage") continue
         try {
-          const dataUrl = await cropToDataUrl(img, q.bbox, 1600)
+          const dataUrl = await cropToDataUrl(img, q.bbox, 1600, true)
           const withLabel = await addLabelWatermark(dataUrl, q.number, q.grading?.correct)
           const blob = dataUrlToBlob(withLabel)
           downloadBlob(blob, `img${i + 1}_q${j + 1}_${q.number || "no-num"}.png`)
           count += 1
-          // 导出配图
           if (includeSubImages) {
             for (let k = 0; k < q.images.length; k++) {
               const si = q.images[k]
-              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 800))
+              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 800, true))
               if (subDataUrl) {
                 const subBlob = dataUrlToBlob(subDataUrl)
                 downloadBlob(subBlob, `img${i + 1}_q${j + 1}_sub${k + 1}.png`)
@@ -188,16 +268,16 @@ export function ExportMenu() {
   }
 
   // ===== 整张带框图 =====
-  const exportWithBoxes = async (showGradingColor: boolean) => {
-    if (images.length === 0) {
+  const exportWithBoxes = async (targets: typeof images, showGradingColor: boolean) => {
+    if (targets.length === 0) {
       toast.error("没有图片可导出")
       return
     }
     setBusy(true)
     let count = 0
-    for (let i = 0; i < images.length; i++) {
+    for (let i = 0; i < targets.length; i++) {
       try {
-        const dataUrl = await renderImageWithBoxes(images[i], {
+        const dataUrl = await renderImageWithBoxes(targets[i], {
           showLabels: true,
           boxColor: "#10b981",
           selectedColor: "#e11d48",
@@ -216,8 +296,8 @@ export function ExportMenu() {
   }
 
   // ===== Word =====
-  const exportWord = async () => {
-    if (images.length === 0) {
+  const exportWord = async (targets: typeof images) => {
+    if (targets.length === 0) {
       toast.error("没有图片")
       return
     }
@@ -226,15 +306,14 @@ export function ExportMenu() {
       const docx = await import("docx")
       const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType } = docx
       const children: any[] = []
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i]
+      for (let i = 0; i < targets.length; i++) {
+        const img = targets[i]
         children.push(
           new Paragraph({
             text: `图片 ${i + 1}：${img.name}`,
             heading: HeadingLevel.HEADING_1,
           })
         )
-        // 文章
         const passages = img.questions.filter((q) => q.kind === "passage")
         passages.forEach((p) => {
           children.push(
@@ -247,7 +326,6 @@ export function ExportMenu() {
             children.push(new Paragraph({ text: line || " " }))
           )
         })
-        // 题目
         const questions = img.questions.filter((q) => q.kind !== "passage")
         for (let qi = 0; qi < questions.length; qi++) {
           const q = questions[qi]
@@ -266,7 +344,7 @@ export function ExportMenu() {
           )
           // 题目截图
           try {
-            const dataUrl = await cropToDataUrl(img, q.bbox, 800)
+            const dataUrl = await cropToDataUrl(img, q.bbox, 800, true)
             const base64 = dataUrl.split(",")[1]
             children.push(
               new Paragraph({
@@ -285,7 +363,7 @@ export function ExportMenu() {
           // 配图
           for (const si of q.images) {
             try {
-              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600))
+              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600, true))
               if (subDataUrl) {
                 const base64 = subDataUrl.split(",")[1]
                 children.push(
@@ -339,7 +417,7 @@ export function ExportMenu() {
       const doc = new Document({ sections: [{ children }] })
       const blob = await Packer.toBlob(doc)
       downloadBlob(blob, `questions-${Date.now()}.docx`)
-      toast.success("已导出 Word 文档")
+      toast.success(`已导出 ${targets.length} 张图的 Word 文档`)
     } catch (e) {
       toast.error(`Word 导出失败：${(e as Error).message}`)
     } finally {
@@ -347,134 +425,87 @@ export function ExportMenu() {
     }
   }
 
-  // ===== PDF（修复 async 截图问题）=====
-  const exportPDF = async () => {
-    if (images.length === 0) {
+  // ===== PDF：用 canvas 渲染中文，彻底解决乱码 =====
+  const exportPDF = async (targets: typeof images) => {
+    if (targets.length === 0) {
       toast.error("没有图片")
       return
     }
     setBusy(true)
     try {
       const { jsPDF } = await import("jspdf")
-      const pdf = new jsPDF({ unit: "pt", format: "a4" })
+      const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true })
       const pageW = pdf.internal.pageSize.getWidth()
       const pageH = pdf.internal.pageSize.getHeight()
-      const margin = 36
-      let y = margin
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i]
-        if (y > pageH - 80) {
-          pdf.addPage()
-          y = margin
-        }
-        pdf.setFontSize(14)
-        pdf.setFont("helvetica", "bold")
-        // 编码中文避免乱码
-        try {
-          const titleB64 = btoa(unescape(encodeURIComponent(`Image ${i + 1}: ${img.name}`)))
-          pdf.text(decodeURIComponent(escape(atob(titleB64))), margin, y)
-        } catch {
-          pdf.text(`Image ${i + 1}`, margin, y)
-        }
-        y += 18
-        // 文章
-        const passages = img.questions.filter((q) => q.kind === "passage")
-        for (const p of passages) {
-          if (y > pageH - 60) { pdf.addPage(); y = margin }
-          pdf.setFontSize(12)
-          pdf.setFont("helvetica", "bold")
-          pdf.text("Passage:", margin, y)
-          y += 14
-          pdf.setFontSize(10)
-          pdf.setFont("helvetica", "normal")
-          const lines = pdf.splitTextToSize(p.content || "(no content)", pageW - margin * 2)
-          for (const line of lines) {
-            if (y > pageH - 40) { pdf.addPage(); y = margin }
-            pdf.text(line, margin, y)
-            y += 12
-          }
-          y += 6
-        }
-        // 题目
+      const margin = 24
+
+      for (let i = 0; i < targets.length; i++) {
+        const img = targets[i]
+        // 1. 第一页：原图 + 框 + 题号标签
+        const { renderImageWithBoxes } = await import("@/lib/merge-images")
+        const boxDataUrl = await renderImageWithBoxes(img, {
+          showLabels: true,
+          showGradingColor: true,
+        })
+        const boxImg = await loadImageLocal(boxDataUrl)
+        const drawW = pageW - margin * 2
+        const drawH = (boxImg.naturalHeight / boxImg.naturalWidth) * drawW
+        const finalDrawH = Math.min(drawH, pageH - margin * 2)
+        const finalDrawW = (finalDrawH / drawH) * drawW
+        if (i > 0) pdf.addPage()
+        pdf.addImage(boxDataUrl, "JPEG", margin, margin, finalDrawW, finalDrawH)
+
+        // 2. 后续页：每道题渲染为图片（含文字 + 截图 + 配图 + 批改）
         const questions = img.questions.filter((q) => q.kind !== "passage")
         for (let qi = 0; qi < questions.length; qi++) {
           const q = questions[qi]
-          if (y > pageH - 60) { pdf.addPage(); y = margin }
-          pdf.setFontSize(12)
-          pdf.setFont("helvetica", "bold")
-          pdf.text(`Q ${q.number || qi + 1}`, margin, y)
-          y += 14
-          pdf.setFontSize(10)
-          pdf.setFont("helvetica", "normal")
-          const lines = pdf.splitTextToSize(q.content || "(no content)", pageW - margin * 2)
-          for (const line of lines) {
-            if (y > pageH - 40) { pdf.addPage(); y = margin }
-            pdf.text(line, margin, y)
-            y += 12
+          // 找关联的阅读材料
+          let passageContent: string | undefined
+          if (q.kind === "passage_question" && q.passageId) {
+            const passage = img.questions.find((x) => x.id === q.passageId)
+            if (passage) passageContent = passage.content
           }
-          y += 4
-          // 题目截图（关键修复：await）
           try {
-            const dataUrl = await cropToDataUrl(img, q.bbox, 800)
-            const base64 = dataUrl.split(",")[1]
-            const imgW = pageW - margin * 2
-            const imgH = imgW * (q.bbox.height / q.bbox.width)
-            if (y + imgH > pageH - margin) {
-              pdf.addPage()
-              y = margin
-            }
-            const finalH = Math.min(imgH, pageH - margin * 2 - y)
-            const finalW = (finalH / imgH) * imgW
-            pdf.addImage(base64, "PNG", margin, y, finalW, finalH)
-            y += finalH + 10
-          } catch (e) {
-            console.error("PDF 截图失败", e)
-          }
-          // 配图
-          for (const si of q.images) {
-            try {
-              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600))
-              const subBase64 = subDataUrl.split(",")[1]
-              if (y > pageH - 200) { pdf.addPage(); y = margin }
-              const subW = (pageW - margin * 2) * 0.6
-              const subH = subW * (si.bbox.height / si.bbox.width)
-              pdf.addImage(subBase64, "PNG", margin, y, subW, subH)
-              y += subH + 8
-            } catch (e) {
-              console.error(e)
-            }
-          }
-          // 批改
-          if (q.grading) {
-            const statusText =
-              q.grading.correct === true ? "[Correct]" :
-              q.grading.correct === "partial" ? "[Partial]" : "[Wrong]"
-            pdf.setFont("helvetica", "bold")
-            pdf.text(`Grading: ${statusText}`, margin, y)
-            y += 14
-            if (q.grading.correctAnswer) {
-              pdf.setFont("helvetica", "normal")
-              const ansLines = pdf.splitTextToSize(`Answer: ${q.grading.correctAnswer}`, pageW - margin * 2)
-              for (const line of ansLines) {
-                if (y > pageH - 40) { pdf.addPage(); y = margin }
-                pdf.text(line, margin, y)
-                y += 12
+            const { dataUrl: qDataUrl } = await renderQuestionToCanvas(img, q, passageContent, {
+              showGrading: true,
+              showSubImages: true,
+              showQuestionImage: true,
+            })
+            if (qDataUrl) {
+              const qImg = await loadImageLocal(qDataUrl)
+              const qDrawW = pageW - margin * 2
+              const qDrawH = (qImg.naturalHeight / qImg.naturalWidth) * qDrawW
+              // 如果一页放不下，分块
+              if (qDrawH <= pageH - margin * 2) {
+                pdf.addPage()
+                pdf.addImage(qDataUrl, "JPEG", margin, margin, qDrawW, qDrawH)
+              } else {
+                // 分块画
+                const sliceCount = Math.ceil(qDrawH / (pageH - margin * 2))
+                const slicePxH = Math.floor(qImg.naturalHeight / sliceCount)
+                for (let s = 0; s < sliceCount; s++) {
+                  const sy = s * slicePxH
+                  const sh = s === sliceCount - 1 ? qImg.naturalHeight - sy : slicePxH
+                  const c2 = document.createElement("canvas")
+                  c2.width = qImg.naturalWidth
+                  c2.height = sh
+                  const c2ctx = c2.getContext("2d")
+                  if (!c2ctx) break
+                  c2ctx.drawImage(qImg, 0, sy, qImg.naturalWidth, sh, 0, 0, qImg.naturalWidth, sh)
+                  const sliceDataUrl = c2.toDataURL("image/jpeg", 0.85)
+                  const sliceDrawH = (sh / qImg.naturalWidth) * qDrawW
+                  pdf.addPage()
+                  pdf.addImage(sliceDataUrl, "JPEG", margin, margin, qDrawW, sliceDrawH)
+                }
               }
             }
-            pdf.setFont("helvetica", "normal")
-            const expLines = pdf.splitTextToSize(`Explanation: ${q.grading.explanation}`, pageW - margin * 2)
-            for (const line of expLines) {
-              if (y > pageH - 40) { pdf.addPage(); y = margin }
-              pdf.text(line, margin, y)
-              y += 12
-            }
-            y += 6
+          } catch (e) {
+            console.error(`PDF 渲染题目 ${qi} 失败`, e)
           }
         }
-        y += 20
       }
       pdf.save(`questions-${Date.now()}.pdf`)
-      toast.success("已导出 PDF")
+      toast.success(`已导出 ${targets.length} 张图的 PDF`)
     } catch (e) {
       toast.error(`PDF 导出失败：${(e as Error).message}`)
     } finally {
@@ -483,8 +514,8 @@ export function ExportMenu() {
   }
 
   // ===== Excel =====
-  const exportExcel = async () => {
-    if (images.length === 0) {
+  const exportExcel = async (targets: typeof images) => {
+    if (targets.length === 0) {
       toast.error("没有图片")
       return
     }
@@ -492,7 +523,7 @@ export function ExportMenu() {
     try {
       const XLSX = await import("xlsx")
       const rows: any[] = []
-      images.forEach((img, i) => {
+      targets.forEach((img, i) => {
         if (img.questions.length === 0) {
           rows.push({
             "图片序号": i + 1,
@@ -536,7 +567,7 @@ export function ExportMenu() {
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, "题目")
       XLSX.writeFile(wb, `questions-${Date.now()}.xlsx`)
-      toast.success("已导出 Excel")
+      toast.success(`已导出 ${targets.length} 张图的 Excel`)
     } catch (e) {
       toast.error(`Excel 导出失败：${(e as Error).message}`)
     } finally {
@@ -544,72 +575,126 @@ export function ExportMenu() {
     }
   }
 
-  const printAll = () => {
-    window.print()
-  }
+  const printAll = () => window.print()
+
+  const label = currentImageOnly ? "当页导出" : "导出"
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={busy} className="shrink-0">
-          {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-          <span className="hidden sm:ml-1 sm:inline">导出</span>
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-60 max-h-[80vh] overflow-y-auto">
-        <DropdownMenuLabel>导出当前所有图片</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <ImageIcon className="size-4 mr-2" /> 整张带框图
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuItem onClick={() => exportWithBoxes(false)}>
-              所有题目框同色
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => exportWithBoxes(true)}>
-              按批改结果分色（错题红色）
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <Images className="size-4 mr-2" /> 题目截图
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuItem onClick={() => exportCroppedImages(false)}>
-              仅题目截图
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => exportCroppedImages(true)}>
-              题目截图 + 配图
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuItem onClick={exportWord}>
-          <FileType className="size-4 mr-2" /> Word 文档
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportPDF}>
-          <FileText className="size-4 mr-2" /> PDF 文档
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportExcel}>
-          <FileSpreadsheet className="size-4 mr-2" /> Excel 表格
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={exportJson}>
-          <FileJson className="size-4 mr-2" /> JSON 数据
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={exportMarkdown}>
-          <FileText className="size-4 mr-2" /> Markdown（含公式）
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={copyAll}>
-          <Copy className="size-4 mr-2" /> 复制全部题文
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={printAll}>
-          <Printer className="size-4 mr-2" /> 打印
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" disabled={busy} className="shrink-0">
+            {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+            <span className="ml-1">{label}</span>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60 max-h-[80vh] overflow-y-auto">
+          <DropdownMenuLabel>
+            {currentImageOnly ? "导出当前图片" : `导出所有图片（${images.length}）`}
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <ImageIcon className="size-4 mr-2" /> 整张带框图
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem onClick={() => openSelectImages("boxes")}>
+                所有题目框同色
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportWithBoxes(targetImages, true)}>
+                按批改结果分色（错题红色）
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Images className="size-4 mr-2" /> 题目截图
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem onClick={() => openSelectImages("cropped")}>
+                仅题目截图
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportCroppedImages(targetImages, true)}>
+                题目截图 + 配图（高清）
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuItem onClick={() => openSelectImages("word")}>
+            <FileType className="size-4 mr-2" /> Word 文档
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openSelectImages("pdf")}>
+            <FileText className="size-4 mr-2" /> PDF 文档
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openSelectImages("excel")}>
+            <FileSpreadsheet className="size-4 mr-2" /> Excel 表格
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => openSelectImages("json")}>
+            <FileJson className="size-4 mr-2" /> JSON 数据
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => openSelectImages("markdown")}>
+            <FileText className="size-4 mr-2" /> Markdown（含公式）
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={copyAll}>
+            <Copy className="size-4 mr-2" /> 复制全部题文
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={printAll}>
+            <Printer className="size-4 mr-2" /> 打印
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {/* 选择图片对话框 */}
+      <Dialog open={selectImagesOpen} onOpenChange={setSelectImagesOpen}>
+        <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>选择要导出的图片</DialogTitle>
+            <DialogDescription>
+              已选 {selectedImageIds.size} / {images.length} 张
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-xs">
+              <button onClick={selectAll} className="px-2 py-1 rounded hover:bg-accent">全选</button>
+              <button onClick={selectNone} className="px-2 py-1 rounded hover:bg-accent">取消全选</button>
+            </div>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {images.map((im, i) => {
+                const checked = selectedImageIds.has(im.id)
+                return (
+                  <label
+                    key={im.id}
+                    className={`flex items-center gap-2 p-2 rounded border cursor-pointer ${
+                      checked ? "border-rose-500 bg-rose-50 dark:bg-rose-950/30" : "border-border hover:bg-accent"
+                    }`}
+                  >
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={() => toggleImage(im.id)}
+                    />
+                    <img src={im.dataUrl} alt="" className="size-10 object-cover rounded shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{im.name}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {im.questions.length} 题
+                        {im.source === "merged" && " · 合并"}
+                      </div>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectImagesOpen(false)}>取消</Button>
+            <Button onClick={confirmSelectAndExport} className="bg-rose-500 hover:bg-rose-600">
+              导出 {selectedImageIds.size} 张
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 }
 
@@ -618,24 +703,17 @@ async function addLabelWatermark(
   label: string,
   correct?: boolean | "partial"
 ): Promise<string> {
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const im = new Image()
-    im.onload = () => resolve(im)
-    im.onerror = reject
-    im.src = dataUrl
-  })
+  const img = await loadImageLocal(dataUrl)
   const canvas = document.createElement("canvas")
   canvas.width = img.naturalWidth
   canvas.height = img.naturalHeight
   const ctx = canvas.getContext("2d")
   if (!ctx) return dataUrl
   ctx.drawImage(img, 0, 0)
-  // 题号水印
   if (label) {
     const text = `第 ${label} 题`
     ctx.font = "bold 24px sans-serif"
     const tw = ctx.measureText(text).width
-    // 错题红色，部分正确黄色，正确绿色，未批改粉色
     const bg =
       correct === false ? "rgba(220, 38, 38, 0.95)" :
       correct === "partial" ? "rgba(217, 119, 6, 0.95)" :
@@ -650,3 +728,17 @@ async function addLabelWatermark(
   return canvas.toDataURL("image/png")
 }
 
+function loadImageLocal(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const im = new Image()
+    im.onload = () => resolve(im)
+    im.onerror = reject
+    im.src = dataUrl
+  })
+}
+
+// 防止未使用告警
+void CheckSquare
+void Square
+void renderQuestionToCanvas
+void renderImageFullPage

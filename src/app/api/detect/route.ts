@@ -46,11 +46,19 @@ const PROMPT = `你是一个题目识别助手。下面这张图是用户拍摄�
 
 function extractJson(text: string): DetectedQuestionDTO[] {
   if (!text) return []
+  // 去掉 markdown 代码块 + 修复中文标点
   let s = text.trim()
+    .replace(/```(?:json)?\s*/g, "")
+    .replace(/```/g, "")
+    .trim()
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
   const start = s.indexOf("[")
   const end = s.lastIndexOf("]")
   if (start === -1 || end === -1 || end <= start) return []
   s = s.slice(start, end + 1)
+    .replace(/,\s*}/g, "}")
+    .replace(/,\s*]/g, "]")
   try {
     const parsed = JSON.parse(s)
     if (!Array.isArray(parsed)) return []

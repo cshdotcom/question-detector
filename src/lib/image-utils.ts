@@ -13,11 +13,14 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
   })
 }
 
-/** 根据 bbox 裁剪原图为 dataURL */
+/** 根据 bbox 裁剪原图为 dataURL
+ * @param enhance 是否启用高清增强（锐化 + 对比度提升）
+ */
 export async function cropToDataUrl(
   img: ImageItem,
   bbox: BBox,
-  maxSide = 800
+  maxSide = 800,
+  enhance: boolean = false
 ): Promise<string> {
   const image = await loadImage(img.dataUrl)
   const sx = bbox.x * img.width
@@ -25,24 +28,69 @@ export async function cropToDataUrl(
   const sw = bbox.width * img.width
   const sh = bbox.height * img.height
   const canvas = document.createElement("canvas")
-  // 限制最大边
-  let cw = sw
-  let ch = sh
-  if (Math.max(sw, sh) > maxSide) {
-    if (sw >= sh) {
+  // 高清：默认 2x 放大，再限制到 maxSide
+  const upscale = enhance ? 2 : 1
+  let cw = sw * upscale
+  let ch = sh * upscale
+  if (Math.max(cw, ch) > maxSide) {
+    if (cw >= ch) {
+      const ratio = maxSide / cw
       cw = maxSide
-      ch = (maxSide / sw) * sh
+      ch = ch * ratio
     } else {
+      const ratio = maxSide / ch
       ch = maxSide
-      cw = (maxSide / sh) * sw
+      cw = cw * ratio
     }
   }
   canvas.width = Math.max(1, Math.round(cw))
   canvas.height = Math.max(1, Math.round(ch))
   const ctx = canvas.getContext("2d")
   if (!ctx) return ""
+  // 高清增强：使用 imageSmoothingQuality high
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = "high"
   ctx.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+  if (enhance) {
+    // 简单锐化：用卷积核
+    try {
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+      const sharpened = applySharpen(imgData, 0.6)
+      ctx.putImageData(sharpened, 0, 0)
+    } catch {
+      // 跨域或大图忽略
+    }
+  }
   return canvas.toDataURL("image/png")
+}
+
+/** 简单锐化卷积 */
+function applySharpen(imageData: ImageData, amount: number = 0.5): ImageData {
+  const w = imageData.width
+  const h = imageData.height
+  const src = imageData.data
+  const dst = new Uint8ClampedArray(src.length)
+  // 锐化核
+  // [ 0, -amount, 0 ]
+  // [-amount, 1+4*amount, -amount]
+  // [ 0, -amount, 0 ]
+  const center = 1 + 4 * amount
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4
+      for (let c = 0; c < 3; c++) {
+        const i = idx + c
+        const up = y > 0 ? src[i - w * 4] : src[i]
+        const down = y < h - 1 ? src[i + w * 4] : src[i]
+        const left = x > 0 ? src[i - 4] : src[i]
+        const right = x < w - 1 ? src[i + 4] : src[i]
+        let val = center * src[i] - amount * (up + down + left + right)
+        dst[i] = Math.max(0, Math.min(255, val))
+      }
+      dst[idx + 3] = src[idx + 3]
+    }
+  }
+  return new ImageData(dst, w, h)
 }
 
 /** 给一道题目填充配图 dataUrl */

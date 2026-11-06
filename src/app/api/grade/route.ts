@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { callVisionChat, type ChatMessage } from "@/lib/ai-service"
 import type { AIProviderConfig, GradingResult } from "@/lib/types"
-import { loadAIConfig } from "@/lib/ai-config"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -64,10 +63,8 @@ ${PROMPT}`
       parts.push({ type: "image_url", image_url: { url: dataUrl } })
     }
 
-    let config = body.config
-    if (!config) {
-      config = loadAIConfig() as AIProviderConfig
-    }
+    // config 必须由前端传入
+    const config = body.config
 
     const messages: ChatMessage[] = [{ role: "user", content: parts }]
     const result = await callVisionChat(messages, { config, maxTokens: 4096 })

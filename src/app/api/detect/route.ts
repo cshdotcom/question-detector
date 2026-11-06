@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { callVisionChat, type ChatMessage } from "@/lib/ai-service"
 import type { DetectedQuestionDTO, AIProviderConfig } from "@/lib/types"
-import { loadAIConfig } from "@/lib/ai-config"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -121,11 +120,8 @@ export async function POST(req: Request) {
       dataUrl = `data:image/jpeg;base64,${dataUrl}`
     }
 
-    // 优先用请求体中的 config，否则用本地存储
-    let config = body.config
-    if (!config) {
-      config = loadAIConfig() as AIProviderConfig
-    }
+    // config 必须由前端传入（localStorage 仅在浏览器存在，服务端无法读取）
+    const config = body.config
 
     const messages: ChatMessage[] = [
       {

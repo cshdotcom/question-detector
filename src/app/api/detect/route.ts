@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server"
-import ZAI from "z-ai-web-dev-sdk"
-import type { DetectedQuestionDTO } from "@/lib/types"
+import { callVisionChat, type ChatMessage } from "@/lib/ai-service"
+import type { DetectedQuestionDTO, AIProviderConfig } from "@/lib/types"
+import { loadAIConfig } from "@/lib/ai-config"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
 
 interface DetectBody {
-  image: string // dataURL 或纯 base64
+  image: string
+  config?: AIProviderConfig
 }
 
 const PROMPT = `你是一个题目识别助手。下面这张图是用户拍摄的试卷/作业/教材照片。
@@ -16,25 +18,32 @@ const PROMPT = `你是一个题目识别助手。下面这张图是用户拍摄�
 - number: 题号字符串（如 "1"、"2(1)"、"三"、"五" 等；若图上没有显式题号，留空字符串）
 - content: 题目正文（题目中的文字内容，包括题干、选项；可换行用 \\n 表示）
 - bbox: 题目在图上的位置框，使用相对坐标（0~1，左上角为原点，宽高均为相对值）：
-  - x: 左上角横坐标（0~1）
-  - y: 左上角纵坐标（0~1）
-  - width: 框宽度（0~1）
-  - height: 框高度（0~1）
+  - x, y, width, height
+- kind: 题目类型，三选一：
+  - "normal"：普通题目（选择题、填空题、计算题等）
+  - "passage"：阅读理解的文章/材料本身
+  - "passage_question"：阅读理解的题目（属于某篇文章后的题目）
 - images: 题目内嵌的配图数组（几何图形、函数图、电路图、表格、插图等），每项：
-  - bbox: 配图在原图中的相对位置框（同上格式）
-  - caption: 配图说明（可选，例如"电路图"、"函数图像"等；无可留空字符串）
+  - bbox: 配图在原图中的相对位置框
+  - caption: 配图说明（可选）
 
 要求：
 1. 数组按题目在图上从上到下的顺序排列。
-2. 同一道题目中的所有内容（题干 + 选项 + 空行 + 配图）都属于同一个 bbox（题目的 bbox 应包含配图）。
-3. bbox 要尽量紧贴题目区域，不要包含相邻题目。
-4. 如果题目内含几何图、函数图、表格、电路图等"配图"，请把每个配图单独提取到 images 数组中。
-5. 如果没有识别到配图，images 返回空数组 []。
-6. 如果图中没有识别到任何题目，返回 []。
-7. 只输出 JSON 数组本身，不要包装，不要解释。
+2. 阅读理解识别：
+   - 如果图中有一篇文章/材料后跟多个题目，把文章本身作为一个 kind="passage" 的项
+   - 后面的每道题目作为 kind="passage_question" 的项
+   - 同一篇文章的题目尽量关联同一篇文章
+3. 同一道题目中的所有内容（题干 + 选项 + 空行 + 配图）都属于同一个 bbox（题目的 bbox 应包含配图）。
+4. bbox 要尽量紧贴题目区域，不要包含相邻题目。
+5. 如果题目内含几何图、函数图、表格、电路图等"配图"，请把每个配图单独提取到 images 数组中。
+6. 如果没有识别到配图，images 返回空数组 []。
+7. 如果图中没有识别到任何题目，返回 []。
+8. 只输出 JSON 数组本身，不要包装，不要解释。
+9. 如果一道题目在当前页未结束（延续到下一页），请在该项中加 "crossPageContinues": true；
+   如果是上一页的延续，请加 "crossPageContinued": true。
 
-示例输出格式：
-[{"number":"1","content":"计算 23 + 45 = ?","bbox":{"x":0.05,"y":0.10,"width":0.90,"height":0.12},"images":[]},{"number":"2","content":"如图所示，求三角形面积。","bbox":{"x":0.05,"y":0.25,"width":0.90,"height":0.30},"images":[{"bbox":{"x":0.30,"y":0.30,"width":0.40,"height":0.20},"caption":"三角形示意图"}]}]`
+示例输出：
+[{"number":"","content":"Read the following passage and answer the questions...","bbox":{"x":0.05,"y":0.05,"width":0.90,"height":0.40},"kind":"passage","images":[]},{"number":"1","content":"What is the main idea?","bbox":{"x":0.05,"y":0.50,"width":0.90,"height":0.08},"kind":"passage_question","images":[]},{"number":"2","content":"计算 $x^2 + 2x + 1 = 0$ 的解。","bbox":{"x":0.05,"y":0.60,"width":0.90,"height":0.10},"kind":"normal","images":[{"bbox":{"x":0.30,"y":0.65,"width":0.40,"height":0.20},"caption":"函数图像"}]}]`
 
 function extractJson(text: string): DetectedQuestionDTO[] {
   if (!text) return []
@@ -57,6 +66,10 @@ function extractJson(text: string): DetectedQuestionDTO[] {
           width: Number(it.bbox?.width ?? 0.9),
           height: Number(it.bbox?.height ?? 0.15),
         },
+        kind: (it.kind === "passage" || it.kind === "passage_question" ? it.kind : "normal") as
+          | "normal"
+          | "passage"
+          | "passage_question",
         images: Array.isArray(it.images)
           ? it.images
               .filter((sub: unknown) => sub && typeof sub === "object")
@@ -70,6 +83,8 @@ function extractJson(text: string): DetectedQuestionDTO[] {
                 caption: typeof sub?.caption === "string" ? sub.caption : "",
               }))
           : [],
+        crossPageContinues: !!it.crossPageContinues,
+        crossPageContinued: !!it.crossPageContinued,
       }))
       .map((q) => ({
         ...q,
@@ -106,27 +121,29 @@ export async function POST(req: Request) {
       dataUrl = `data:image/jpeg;base64,${dataUrl}`
     }
 
-    const zai = await ZAI.create()
-    const resp = await zai.chat.completions.createVision({
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: PROMPT },
-            { type: "image_url", image_url: { url: dataUrl } },
-          ],
-        },
-      ],
-      thinking: { type: "disabled" },
-    })
+    // 优先用请求体中的 config，否则用本地存储
+    let config = body.config
+    if (!config) {
+      config = loadAIConfig() as AIProviderConfig
+    }
 
-    const content = resp.choices?.[0]?.message?.content ?? ""
-    const questions = extractJson(content)
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: PROMPT },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ]
+
+    const result = await callVisionChat(messages, { config, maxTokens: 8192 })
+    const questions = extractJson(result.content)
 
     return NextResponse.json({
       ok: true,
       questions,
-      raw: content,
+      provider: config?.enabled && config.apiKey ? "openai-compatible" : "zai",
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

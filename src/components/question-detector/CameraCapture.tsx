@@ -1,31 +1,44 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Camera, CameraOff, RefreshCw, X, SwitchCamera, CheckCircle2, Loader2 } from "lucide-react"
+import {
+  Camera,
+  CameraOff,
+  RefreshCw,
+  X,
+  SwitchCamera,
+  CheckCircle2,
+  Loader2,
+  Layers,
+  Square,
+} from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
-import { detectQuestions } from "@/lib/detect-service"
+import { mergeImagesVertically } from "@/lib/merge-images"
+import { cn } from "@/lib/utils"
 
 interface CameraCaptureProps {
   open: boolean
   onClose: () => void
 }
 
+type ShootMode = "single" | "crosspage"
+
 export function CameraCapture({ open, onClose }: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const facingRef = useRef<"environment" | "user">("environment")
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
+  const [facingDisplay, setFacingDisplay] = useState<"environment" | "user">("environment")
   const [shotCount, setShotCount] = useState(0)
   const [busy, setBusy] = useState(false)
-  const [autoDetectPending, setAutoDetectPending] = useState<string | null>(null)
+  const [mode, setMode] = useState<ShootMode>("single")
+  const crossPagePendingRef = useRef<string[]>([])
+  const [crossPageCount, setCrossPageCount] = useState(0)
 
   const addImage = useDetectorStore((s) => s.addImage)
   const setCurrentImage = useDetectorStore((s) => s.setCurrentImage)
-  const setDetecting = useDetectorStore((s) => s.setDetecting)
-  const setQuestions = useDetectorStore((s) => s.setQuestions)
-  const autoDetect = useDetectorStore((s) => s.autoDetect)
 
   const stopStream = useCallback(() => {
     if (streamRef.current) {
@@ -39,9 +52,10 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     setError(null)
     setBusy(true)
     try {
+      const fm = facingRef.current
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: { ideal: facingMode },
+          facingMode: { ideal: fm },
           width: { ideal: 1920 },
           height: { ideal: 1080 },
         },
@@ -63,6 +77,23 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
         msg = "摄像头被其他程序占用，请关闭后重试。"
       } else if (err.name === "OverconstrainedError") {
+        // 切换失败时回退到不指定 facingMode
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          })
+          streamRef.current = fallbackStream
+          if (videoRef.current) {
+            videoRef.current.srcObject = fallbackStream
+            await videoRef.current.play().catch(() => {})
+          }
+          setStreaming(true)
+          setBusy(false)
+          return
+        } catch {
+          // 用原错误信息
+        }
         msg = "当前摄像头不满足请求的分辨率，可尝试切换摄像头。"
       }
       setError(msg)
@@ -70,11 +101,13 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     } finally {
       setBusy(false)
     }
-  }, [facingMode])
+  }, [])
 
   useEffect(() => {
     if (open) {
       setShotCount(0)
+      crossPagePendingRef.current = []
+      setCrossPageCount(0)
       startStream()
     } else {
       stopStream()
@@ -82,12 +115,17 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     return () => stopStream()
   }, [open, startStream, stopStream])
 
+  // 关键修复：切换摄像头时先更新 ref，再停止旧流并重新启动
   const switchCamera = useCallback(async () => {
+    const next = facingRef.current === "environment" ? "user" : "environment"
+    facingRef.current = next
+    setFacingDisplay(next)
     stopStream()
-    const next = facingMode === "environment" ? "user" : "environment"
-    setFacingMode(next)
-    setTimeout(() => startStream(), 50)
-  }, [facingMode, startStream, stopStream])
+    setStreaming(false)
+    // 等待流停止
+    await new Promise((r) => setTimeout(r, 200))
+    await startStream()
+  }, [startStream, stopStream])
 
   const capture = useCallback(async () => {
     const video = videoRef.current
@@ -116,12 +154,32 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       toast.error("无法创建画布上下文")
       return
     }
-    if (facingMode === "user") {
+    const fm = facingRef.current
+    if (fm === "user") {
       ctx.translate(w, 0)
       ctx.scale(-1, 1)
     }
     ctx.drawImage(video, 0, 0, w, h)
     const dataUrl = canvas.toDataURL("image/jpeg", 0.92)
+
+    if (mode === "crosspage") {
+      // 跨页模式：累积图片，但用一个特殊标记让 useAutoDetect 跳过
+      const newId = addImage({
+        name: `[待合并] 跨页第 ${crossPageCount + 1} 页`,
+        dataUrl,
+        width: w,
+        height: h,
+        source: "camera",
+      })
+      // 立即标记为 detected，避免被 useAutoDetect 处理
+      const setDetected = useDetectorStore.getState().setDetected
+      setDetected(newId, true)
+      crossPagePendingRef.current.push(newId)
+      setCrossPageCount(crossPagePendingRef.current.length)
+      toast.success(`已拍第 ${crossPageCount + 1} 页，可继续拍下一页`)
+      return
+    }
+
     const newId = addImage({
       name: `拍照 ${new Date().toLocaleString("zh-CN", { hour12: false })}`,
       dataUrl,
@@ -132,77 +190,154 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     setCurrentImage(newId)
     const c = shotCount + 1
     setShotCount(c)
-    toast.success(`已拍第 ${c} 张` + (autoDetect ? "，正在自动识别…" : ""))
+    toast.success(`已拍第 ${c} 张`)
+  }, [addImage, shotCount, mode, setCurrentImage, crossPageCount])
 
-    // 自动识别
-    if (autoDetect) {
-      setAutoDetectPending(newId)
-    }
-  }, [addImage, facingMode, shotCount, autoDetect, setCurrentImage])
-
-  // 拍照后异步自动识别
-  useEffect(() => {
-    if (!autoDetectPending) return
-    const imgId = autoDetectPending
-    const img = useDetectorStore.getState().images.find((x) => x.id === imgId)
-    if (!img) {
-      setAutoDetectPending(null)
+  // 跨页模式：完成拍摄，合并图片并触发识别
+  const finishCrossPage = useCallback(async () => {
+    const ids = crossPagePendingRef.current
+    if (ids.length === 0) {
+      toast.error("还没有拍摄任何页面")
       return
     }
-    let cancelled = false
-    ;(async () => {
-      setDetecting(imgId, true)
-      try {
-        const qs = await detectQuestions(img, "ai")
-        if (cancelled) return
-        setQuestions(imgId, qs, "ai")
-        toast.success(`已识别 ${qs.length} 道题目`)
-      } catch (e) {
-        if (cancelled) return
-        const err = e as Error
-        toast.error(`自动识别失败：${err.message}`)
-        setDetecting(imgId, false)
-      } finally {
-        if (!cancelled) setAutoDetectPending(null)
+    setBusy(true)
+    try {
+      const imgs = useDetectorStore
+        .getState()
+        .images.filter((im) => ids.includes(im.id))
+      if (imgs.length === 0) {
+        crossPagePendingRef.current = []
+        setCrossPageCount(0)
+        setMode("single")
+        return
       }
-    })()
-    return () => {
-      cancelled = true
+      // 单页直接重置
+      if (imgs.length === 1) {
+        const id = imgs[0].id
+        const setDetected = useDetectorStore.getState().setDetected
+        setDetected(id, false)
+        crossPagePendingRef.current = []
+        setCrossPageCount(0)
+        setMode("single")
+        setCurrentImage(id)
+        return
+      }
+      const { dataUrl, width, height } = await mergeImagesVertically(imgs)
+      const mergedId = addImage({
+        name: `跨页合并 ${imgs.length} 页`,
+        dataUrl,
+        width,
+        height,
+        source: "merged",
+      })
+      // 删除原始单页
+      const removeImage = useDetectorStore.getState().removeImage
+      ids.forEach((id) => removeImage(id))
+      crossPagePendingRef.current = []
+      setCrossPageCount(0)
+      setMode("single")
+      setCurrentImage(mergedId)
+      toast.success(`已合并 ${imgs.length} 页为一张图，正在识别…`)
+      // 主动触发识别（合并图不会被 useAutoDetect 自动处理，因为 knownIdsRef 已经包含它）
+      const setDetecting = useDetectorStore.getState().setDetecting
+      const setQuestions = useDetectorStore.getState().setQuestions
+      const autoDetectOn = useDetectorStore.getState().autoDetect
+      const cfg = useDetectorStore.getState().aiConfig
+      if (autoDetectOn) {
+        setDetecting(mergedId, true)
+        try {
+          // 异步加载
+          const { detectQuestions } = await import("@/lib/detect-service")
+          const fresh = useDetectorStore.getState().images.find((x) => x.id === mergedId)
+          if (fresh) {
+            const qs = await detectQuestions(fresh, "ai", cfg)
+            setQuestions(mergedId, qs, "ai")
+            toast.success(`已识别 ${qs.length} 道题目`)
+          }
+        } catch (e) {
+          toast.error(`识别失败：${(e as Error).message}`)
+          setDetecting(mergedId, false)
+        }
+      }
+    } catch (e) {
+      toast.error(`合并失败：${(e as Error).message}`)
+    } finally {
+      setBusy(false)
     }
-  }, [autoDetectPending, setDetecting, setQuestions])
+  }, [addImage, setCurrentImage])
 
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
       {/* 顶部栏 */}
-      <div className="flex items-center justify-between px-4 py-3 text-white">
-        <div className="flex items-center gap-2">
-          <Camera className="size-5" />
-          <span className="font-medium">浏览器相机拍照</span>
-          {streaming && (
-            <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full flex items-center gap-1">
+      <div className="flex items-center justify-between px-4 py-3 text-white safe-top">
+        <div className="flex items-center gap-2 min-w-0">
+          <Camera className="size-5 shrink-0" />
+          <span className="font-medium truncate">浏览器相机</span>
+          {streaming && mode !== "crosspage" && (
+            <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
               <CheckCircle2 className="size-3 text-emerald-400" />
-              已拍 {shotCount} 张
+              已拍 {shotCount}
+            </span>
+          )}
+          {streaming && mode === "crosspage" && (
+            <span className="text-xs bg-amber-500/30 text-amber-200 px-2 py-0.5 rounded-full flex items-center gap-1 shrink-0">
+              <Layers className="size-3" />
+              跨页 {crossPageCount} 页
             </span>
           )}
         </div>
         <button
           onClick={onClose}
-          className="p-2 hover:bg-white/10 rounded-full"
+          className="p-2 hover:bg-white/10 rounded-full shrink-0"
           aria-label="关闭"
         >
           <X className="size-5" />
         </button>
       </div>
 
+      {/* 模式选择 */}
+      <div className="flex items-center justify-center gap-2 px-4 pb-2">
+        {([
+          { key: "single", label: "单题/多题", icon: Square },
+          { key: "crosspage", label: "跨页题", icon: Layers },
+        ] as const).map((m) => {
+          const Icon = m.icon
+          return (
+            <button
+              key={m.key}
+              onClick={() => {
+                if (mode === "crosspage" && m.key !== "crosspage" && crossPagePendingRef.current.length > 0) {
+                  if (!confirm("跨页模式下已拍内容会被丢弃，确认切换吗？")) return
+                  const removeImage = useDetectorStore.getState().removeImage
+                  crossPagePendingRef.current.forEach((id) => removeImage(id))
+                  crossPagePendingRef.current = []
+                  setCrossPageCount(0)
+                }
+                setMode(m.key)
+              }}
+              className={cn(
+                "px-3 py-1.5 rounded-full text-xs flex items-center gap-1.5 transition-colors",
+                mode === m.key
+                  ? "bg-rose-500 text-white"
+                  : "bg-white/10 text-white/80 hover:bg-white/20"
+              )}
+            >
+              <Icon className="size-3.5" />
+              {m.label}
+            </button>
+          )
+        })}
+      </div>
+
       {/* 视频区 */}
-      <div className="flex-1 relative flex items-center justify-center">
+      <div className="flex-1 relative flex items-center justify-center min-h-0">
         <video
           ref={videoRef}
           playsInline
           muted
           autoPlay
           className="w-full h-full object-contain"
-          style={{ transform: facingMode === "user" ? "scaleX(-1)" : undefined }}
+          style={{ transform: facingDisplay === "user" ? "scaleX(-1)" : undefined }}
         />
         {!streaming && !error && (
           <div className="absolute inset-0 flex items-center justify-center text-white/80">
@@ -226,11 +361,11 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       </div>
 
       {/* 底部控制 */}
-      <div className="flex items-center justify-between px-6 py-4 text-white">
+      <div className="flex items-center justify-between px-6 py-4 text-white safe-bottom">
         <button
           onClick={switchCamera}
           disabled={!streaming || busy}
-          className="flex flex-col items-center gap-1 disabled:opacity-40"
+          className="flex flex-col items-center gap-1 disabled:opacity-40 shrink-0"
         >
           <div className="size-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center">
             <SwitchCamera className="size-5" />
@@ -238,18 +373,31 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
           <span className="text-xs">切换</span>
         </button>
 
-        <button
-          onClick={capture}
-          disabled={!streaming || busy}
-          className="size-20 rounded-full border-4 border-white flex items-center justify-center hover:scale-105 transition-transform disabled:opacity-40"
-          aria-label="拍照"
-        >
-          <div className="size-14 rounded-full bg-white" />
-        </button>
+        {mode === "crosspage" && crossPageCount > 0 ? (
+          <button
+            onClick={finishCrossPage}
+            disabled={busy}
+            className="size-20 rounded-full border-4 border-amber-400 flex items-center justify-center hover:scale-105 transition-transform disabled:opacity-50"
+            aria-label="完成跨页拍摄"
+          >
+            <div className="size-14 rounded-full bg-amber-400 flex items-center justify-center">
+              <CheckCircle2 className="size-7 text-white" />
+            </div>
+          </button>
+        ) : (
+          <button
+            onClick={capture}
+            disabled={!streaming || busy}
+            className="size-20 rounded-full border-4 border-white flex items-center justify-center hover:scale-105 transition-transform disabled:opacity-40"
+            aria-label="拍照"
+          >
+            <div className="size-14 rounded-full bg-white" />
+          </button>
+        )}
 
         <button
           onClick={onClose}
-          className="flex flex-col items-center gap-1"
+          className="flex flex-col items-center gap-1 shrink-0"
         >
           <div className="size-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center">
             <CheckCircle2 className="size-5" />

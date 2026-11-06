@@ -8,20 +8,21 @@ import { loadImage } from "./image-utils"
 interface DetectOptions {
   /** 二值化阈值（0~255） */
   threshold?: number
-  /** 最小行间距（相对值，0~1），小于此值的相邻块合并 */
-  minGapHeight?: number
+  /** 行间距阈值（相对值，0~1），小于此值的相邻行合并为同一题 */
+  mergeGap?: number
   /** 最小题目高度（相对值，0~1），小于此值的题目被丢弃 */
   minQuestionHeight?: number
+  /** 题目之间的最小间距（相对值，0~1），大于此值的间隔作为题目分界 */
+  questionGap?: number
 }
 
 /**
  * 离线识别：基于水平投影的行分割算法
- * 思路：把图片转灰度 → 二值化 → 对每行求黑色像素数 → 找到连续的"低密度行"作为题目分界
- * 然后：合并相邻较近的块（可能是同一道题的多行）
- *
- * 这是一种简单但有效的算法，适用于：
- * - 文字密度均匀的试卷/作业
- * - 题目之间有明显空白行
+ * 思路：
+ * 1. 转灰度 → 二值化 → 每行求墨水密度
+ * 2. 找连续的"有内容"行段（小段，间距阈值小）
+ * 3. 把相邻较近的行段合并为"一道题"（合并间距 = questionGap）
+ * 4. 过滤过小的题
  *
  * 不依赖 AI，纯前端运行。
  */
@@ -29,14 +30,16 @@ export async function detectQuestionsOffline(
   img: ImageItem,
   options: DetectOptions = {}
 ): Promise<Question[]> {
-  const threshold = options.threshold ?? 180
-  // 默认合并间距：相对图高 3%（足够合并题目内的多行，但保留题目间的明显空白）
-  const minGapHeight = options.minGapHeight ?? 0.03
-  // 默认最小题目高度：相对图高 3%
-  const minQuestionHeight = options.minQuestionHeight ?? 0.03
+  const threshold = options.threshold ?? 200
+  // 行内合并：小间距（让同一题内的换行行合并）
+  const mergeGap = options.mergeGap ?? 0.008
+  // 题目之间的分界（更大间距）
+  const questionGap = options.questionGap ?? 0.025
+  const minQuestionHeight = options.minQuestionHeight ?? 0.025
 
   const image = await loadImage(img.dataUrl)
-  const maxSide = 1000
+  // 限制处理尺寸
+  const maxSide = 1200
   let scale = 1
   if (Math.max(img.width, img.height) > maxSide) {
     scale = maxSide / Math.max(img.width, img.height)
@@ -67,16 +70,15 @@ export async function detectQuestionsOffline(
     rowInk[y] = ink
   }
 
-  // 2. 行判定阈值：墨水量大于 5 像素即认为有内容
-  const rowThreshold = 5
+  // 2. 行判定阈值：墨水量大于 3 像素即认为有内容
+  const rowThreshold = 3
 
-  // 3. 找连续的内容块（行）
+  // 3. 找连续的内容块（先用 mergeGap 合并相邻行）
   const blocks: { startY: number; endY: number }[] = []
   let inBlock = false
   let blockStart = 0
   let gapLen = 0
-  // 第一步先找小段，间距阈值很小（1像素），即任何有内容的连续行
-  const smallGap = 2
+  const mergeGapPx = mergeGap * h
   for (let y = 0; y < h; y++) {
     const hasInk = rowInk[y] > rowThreshold
     if (hasInk) {
@@ -88,7 +90,7 @@ export async function detectQuestionsOffline(
     } else {
       if (inBlock) {
         gapLen++
-        if (gapLen > smallGap) {
+        if (gapLen > mergeGapPx) {
           blocks.push({ startY: blockStart, endY: y - gapLen })
           inBlock = false
         }
@@ -99,11 +101,12 @@ export async function detectQuestionsOffline(
     blocks.push({ startY: blockStart, endY: h - 1 })
   }
 
-  // 4. 合并相邻较近的块（间距小于 minGapHeight * h 的合并为同一道题）
+  // 4. 把相邻的块按 questionGap 合并为题目
+  const questionGapPx = questionGap * h
   const mergedBlocks: { startY: number; endY: number }[] = []
   for (const b of blocks) {
     const last = mergedBlocks[mergedBlocks.length - 1]
-    if (last && b.startY - last.endY < minGapHeight * h) {
+    if (last && b.startY - last.endY < questionGapPx) {
       last.endY = b.endY
     } else {
       mergedBlocks.push({ ...b })
@@ -129,10 +132,11 @@ export async function detectQuestionsOffline(
       content: "",
       bbox,
       images: [],
+      kind: "normal",
     })
   }
 
-  // 6. 清理 canvas
+  // 清理
   canvas.width = 0
   canvas.height = 0
 

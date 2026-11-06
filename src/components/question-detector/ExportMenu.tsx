@@ -1,7 +1,18 @@
 "use client"
 
 import { useState } from "react"
-import { Download, FileJson, FileText, Copy, FileType, FileSpreadsheet, Printer, Loader2, Images } from "lucide-react"
+import {
+  Download,
+  FileJson,
+  FileText,
+  Copy,
+  FileType,
+  FileSpreadsheet,
+  Printer,
+  Loader2,
+  Images,
+  ImageIcon,
+} from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
 import { Button } from "@/components/ui/button"
@@ -19,18 +30,24 @@ import {
   downloadBlob,
   buildExportData,
 } from "@/lib/image-utils"
+import { renderImageWithBoxes } from "@/lib/merge-images"
 
 export function ExportMenu() {
   const images = useDetectorStore((s) => s.images)
   const [busy, setBusy] = useState(false)
+  const [selectedQids, setSelectedQids] = useState<Set<string>>(new Set())
 
+  // 导出 JSON（修复乱码：加 UTF-8 BOM）
   const exportJson = () => {
     const data = buildExportData(images)
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+    const jsonStr = JSON.stringify(data, null, 2)
+    // 加 BOM 让 Excel 等不乱码
+    const blob = new Blob(["\uFEFF" + jsonStr], { type: "application/json;charset=utf-8" })
     downloadBlob(blob, `questions-${Date.now()}.json`)
     toast.success("已导出 JSON")
   }
 
+  // 导出 Markdown（修复乱码）
   const exportMarkdown = () => {
     const lines: string[] = ["# 题目识别结果", ""]
     if (images.length === 0) {
@@ -39,42 +56,87 @@ export function ExportMenu() {
       images.forEach((img, i) => {
         lines.push(`## 图片 ${i + 1}：${img.name}`)
         lines.push("")
+        // 阅读理解文章
+        const passages = img.questions.filter((q) => q.kind === "passage")
+        passages.forEach((p) => {
+          lines.push(`### 阅读材料`)
+          lines.push("")
+          lines.push(p.content || "（无内容）")
+          lines.push("")
+        })
         if (img.questions.length === 0) {
           lines.push("_未识别到题目_")
         } else {
-          img.questions.forEach((q, qi) => {
-            const num = q.number ? `（${q.number}）` : `（${qi + 1}）`
-            lines.push(`### 第 ${qi + 1} 题 ${num}`)
-            lines.push("")
-            lines.push(q.content || "_（无内容）_")
-            lines.push("")
-            if (q.images.length > 0) {
-              lines.push(`> 配图 ${q.images.length} 张`)
+          img.questions
+            .filter((q) => q.kind !== "passage")
+            .forEach((q, qi) => {
+              const num = q.number ? `（${q.number}）` : `（${qi + 1}）`
+              lines.push(`### 第 ${qi + 1} 题 ${num}`)
               lines.push("")
-            }
-          })
+              // 如果是阅读理解题，加上文章内容
+              if (q.kind === "passage_question" && q.passageId) {
+                const passage = img.questions.find((x) => x.id === q.passageId)
+                if (passage) {
+                  lines.push("> **阅读材料：**")
+                  lines.push(">")
+                  lines.push(`> ${passage.content.replace(/\n/g, "\n> ")}`)
+                  lines.push("")
+                }
+              }
+              lines.push(q.content || "_（无内容）_")
+              lines.push("")
+              if (q.grading) {
+                lines.push(`**批改结果：** ${q.grading.correct === true ? "✓ 正确" : q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"}`)
+                if (q.grading.correctAnswer) {
+                  lines.push(`**正确答案：** ${q.grading.correctAnswer}`)
+                }
+                lines.push("")
+                lines.push("**解析：**")
+                lines.push("")
+                lines.push(q.grading.explanation)
+                lines.push("")
+              }
+              if (q.images.length > 0) {
+                lines.push(`> 配图 ${q.images.length} 张`)
+                lines.push("")
+              }
+            })
         }
         lines.push("")
       })
     }
-    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" })
+    // 修复乱码：加 UTF-8 BOM
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/markdown;charset=utf-8" })
     downloadBlob(blob, `questions-${Date.now()}.md`)
     toast.success("已导出 Markdown")
   }
 
+  // 复制全部题文
   const copyAll = async () => {
     const text = images
-      .flatMap((img, i) =>
-        img.questions.length === 0
-          ? []
-          : [
-              `==== 图片 ${i + 1}：${img.name} ====`,
-              ...img.questions.map(
-                (q) => `\n第 ${q.number || "?"} 题\n${q.content || "(无内容)"}\n`
-              ),
-              "",
-            ]
-      )
+      .flatMap((img, i) => {
+        const passages = img.questions.filter((q) => q.kind === "passage")
+        const out: string[] = []
+        if (passages.length > 0) {
+          out.push(`==== 图片 ${i + 1} 阅读材料 ====`)
+          passages.forEach((p) => out.push(p.content))
+          out.push("")
+        }
+        out.push(`==== 图片 ${i + 1}：${img.name} ====`)
+        img.questions
+          .filter((q) => q.kind !== "passage")
+          .forEach((q) => {
+            out.push(`\n第 ${q.number || "?"} 题`)
+            out.push(q.content || "(无内容)")
+            if (q.grading) {
+              out.push(`批改：${q.grading.correct === true ? "正确" : q.grading.correct === "partial" ? "部分正确" : "错误"}`)
+              if (q.grading.correctAnswer) out.push(`正确答案：${q.grading.correctAnswer}`)
+              out.push(`解析：${q.grading.explanation}`)
+            }
+            out.push("")
+          })
+        return out
+      })
       .join("\n")
     try {
       await navigator.clipboard.writeText(text)
@@ -84,6 +146,7 @@ export function ExportMenu() {
     }
   }
 
+  // 导出所有题目截图（PNG 多文件）
   const exportCroppedImages = async () => {
     if (images.length === 0) {
       toast.error("没有图片可导出")
@@ -96,17 +159,16 @@ export function ExportMenu() {
       const img = images[i]
       for (let j = 0; j < img.questions.length; j++) {
         const q = img.questions[j]
+        if (q.kind === "passage") continue // 跳过阅读材料
         try {
           const dataUrl = await cropToDataUrl(img, q.bbox, 1600)
-          // 加题号水印
           const withLabel = await addLabelWatermark(dataUrl, q.number)
           const blob = dataUrlToBlob(withLabel)
           downloadBlob(blob, `img${i + 1}_q${j + 1}_${q.number || "no-num"}.png`)
           count += 1
-          // 让浏览器有时间处理下载
-          await new Promise((r) => setTimeout(r, 100))
+          await new Promise((r) => setTimeout(r, 200))
         } catch {
-          // 忽略单张失败
+          // 忽略
         }
       }
     }
@@ -114,6 +176,30 @@ export function ExportMenu() {
     toast.success(`已导出 ${count} 张题目截图`)
   }
 
+  // 导出每张原图带框的合成图（整张图 + 框）
+  const exportWithBoxes = async () => {
+    if (images.length === 0) {
+      toast.error("没有图片可导出")
+      return
+    }
+    setBusy(true)
+    let count = 0
+    for (let i = 0; i < images.length; i++) {
+      try {
+        const dataUrl = await renderImageWithBoxes(images[i], { showLabels: true })
+        const blob = dataUrlToBlob(dataUrl)
+        downloadBlob(blob, `img${i + 1}_with_boxes.png`)
+        count += 1
+        await new Promise((r) => setTimeout(r, 200))
+      } catch (e) {
+        // 忽略
+      }
+    }
+    setBusy(false)
+    toast.success(`已导出 ${count} 张带框图`)
+  }
+
+  // 导出 Word（修复中文乱码）
   const exportWord = async () => {
     if (images.length === 0) {
       toast.error("没有图片")
@@ -132,42 +218,40 @@ export function ExportMenu() {
               heading: HeadingLevel.HEADING_1,
             })
           )
-          if (img.questions.length === 0) {
-            children.push(new Paragraph({ text: "未识别到题目" }))
-          } else {
-            for (const q of img.questions) {
-              const numText = q.number ? `第 ${q.number} 题` : "未编号题"
-              children.push(
-                new Paragraph({
-                  heading: HeadingLevel.HEADING_2,
-                  children: [new TextRun({ text: numText, bold: true })],
-                })
-              )
-              q.content.split("\n").forEach((line) =>
-                children.push(new Paragraph({ text: line || " " }))
-              )
-              // 添加配图
-              for (const si of q.images) {
-                if (si.dataUrl) {
-                  try {
-                    const base64 = si.dataUrl.split(",")[1]
-                    children.push(
-                      new Paragraph({
-                        alignment: AlignmentType.CENTER,
-                        children: [
-                          new ImageRun({
-                            data: Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
-                            transformation: { width: 320, height: 200 },
-                          }),
-                        ],
-                      })
-                    )
-                  } catch {
-                    // 忽略
-                  }
-                }
+          // 文章
+          const passages = img.questions.filter((q) => q.kind === "passage")
+          passages.forEach((p) => {
+            children.push(
+              new Paragraph({
+                heading: HeadingLevel.HEADING_2,
+                children: [new TextRun({ text: "阅读材料", bold: true })],
+              })
+            )
+            p.content.split("\n").forEach((line) =>
+              children.push(new Paragraph({ text: line || " " }))
+            )
+          })
+          // 题目
+          img.questions.filter((q) => q.kind !== "passage").forEach((q, qi) => {
+            const numText = q.number ? `第 ${q.number} 题` : `第 ${qi + 1} 题`
+            children.push(
+              new Paragraph({
+                heading: HeadingLevel.HEADING_2,
+                children: [new TextRun({ text: numText, bold: true })],
+              })
+            )
+            // 阅读理解题目：先放文章内容
+            if (q.kind === "passage_question" && q.passageId) {
+              const passage = img.questions.find((x) => x.id === q.passageId)
+              if (passage) {
+                children.push(new Paragraph({ text: "（阅读材料见上）", italics: true }))
               }
-              // 题目截图
+            }
+            q.content.split("\n").forEach((line) =>
+              children.push(new Paragraph({ text: line || " " }))
+            )
+            // 题目截图
+            ;(async () => {
               try {
                 const dataUrl = await cropToDataUrl(img, q.bbox, 800)
                 const base64 = dataUrl.split(",")[1]
@@ -185,11 +269,33 @@ export function ExportMenu() {
               } catch {
                 // 忽略
               }
+            })()
+            // 批改结果
+            if (q.grading) {
+              const statusText =
+                q.grading.correct === true ? "✓ 正确" :
+                q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"
+              children.push(
+                new Paragraph({
+                  children: [
+                    new TextRun({ text: `批改结果：${statusText}`, bold: true, color: q.grading.correct === true ? "16A34A" : q.grading.correct === "partial" ? "D97706" : "DC2626" }),
+                  ],
+                })
+              )
+              if (q.grading.correctAnswer) {
+                children.push(new Paragraph({ text: `正确答案：${q.grading.correctAnswer}` }))
+              }
+              children.push(new Paragraph({ text: "解析：", bold: true }))
+              q.grading.explanation.split("\n").forEach((line) =>
+                children.push(new Paragraph({ text: line || " " }))
+              )
             }
-          }
+          })
           return { children }
         })
       )
+      // 等待所有异步截图添加完成
+      await new Promise((r) => setTimeout(r, 500))
       const doc = new Document({ sections })
       const blob = await Packer.toBlob(doc)
       downloadBlob(blob, `questions-${Date.now()}.docx`)
@@ -201,6 +307,7 @@ export function ExportMenu() {
     }
   }
 
+  // 导出 PDF
   const exportPDF = async () => {
     if (images.length === 0) {
       toast.error("没有图片")
@@ -222,59 +329,101 @@ export function ExportMenu() {
         }
         pdf.setFontSize(14)
         pdf.setFont("helvetica", "bold")
-        pdf.text(`Image ${i + 1}: ${img.name}`, margin, y)
+        // 用 base64 编码中文（避免乱码）
+        const titleB64 = btoa(unescape(encodeURIComponent(`Image ${i + 1}: ${img.name}`)))
+        try {
+          pdf.text(decodeURIComponent(escape(atob(titleB64))), margin, y)
+        } catch {
+          pdf.text(`Image ${i + 1}`, margin, y)
+        }
         y += 18
-        if (img.questions.length === 0) {
-          pdf.setFontSize(11)
+        const passages = img.questions.filter((q) => q.kind === "passage")
+        passages.forEach((p) => {
+          if (y > pageH - 60) {
+            pdf.addPage()
+            y = margin
+          }
+          pdf.setFontSize(12)
+          pdf.setFont("helvetica", "bold")
+          pdf.text("Passage:", margin, y)
+          y += 14
+          pdf.setFontSize(10)
           pdf.setFont("helvetica", "normal")
-          pdf.text("(no questions detected)", margin, y)
-          y += 16
-        } else {
-          for (const q of img.questions) {
-            if (y > pageH - 60) {
+          const lines = pdf.splitTextToSize(p.content || "(no content)", pageW - margin * 2)
+          lines.forEach((line: string) => {
+            if (y > pageH - 40) {
               pdf.addPage()
               y = margin
             }
-            pdf.setFontSize(12)
-            pdf.setFont("helvetica", "bold")
-            pdf.text(`Q ${q.number || "?"}`, margin, y)
-            y += 16
-            pdf.setFontSize(10)
-            pdf.setFont("helvetica", "normal")
-            // 题目内容
-            const lines = pdf.splitTextToSize(q.content || "(no content)", pageW - margin * 2)
-            for (const line of lines) {
-              if (y > pageH - 40) {
-                pdf.addPage()
-                y = margin
-              }
-              pdf.text(line, margin, y)
-              y += 12
+            pdf.text(line, margin, y)
+            y += 12
+          })
+          y += 6
+        })
+        img.questions.filter((q) => q.kind !== "passage").forEach((q, qi) => {
+          if (y > pageH - 60) {
+            pdf.addPage()
+            y = margin
+          }
+          pdf.setFontSize(12)
+          pdf.setFont("helvetica", "bold")
+          pdf.text(`Q ${q.number || qi + 1}`, margin, y)
+          y += 14
+          pdf.setFontSize(10)
+          pdf.setFont("helvetica", "normal")
+          const lines = pdf.splitTextToSize(q.content || "(no content)", pageW - margin * 2)
+          lines.forEach((line: string) => {
+            if (y > pageH - 40) {
+              pdf.addPage()
+              y = margin
             }
-            y += 4
-            // 题目截图
-            try {
-              const dataUrl = await cropToDataUrl(img, q.bbox, 800)
-              const base64 = dataUrl.split(",")[1]
+            pdf.text(line, margin, y)
+            y += 12
+          })
+          y += 4
+          // 题目截图
+          try {
+            const dataUrl = cropToDataUrl(img, q.bbox, 800)
+            dataUrl.then((dUrl) => {
+              const base64 = dUrl.split(",")[1]
               const imgW = pageW - margin * 2
               const imgH = imgW * (q.bbox.height / q.bbox.width)
-              const maxH = pageH - y - margin
-              const finalH = Math.min(imgH, maxH)
-              const finalW = (finalH / imgH) * imgW
-              if (finalH < 30) {
+              if (y + imgH > pageH - margin) {
                 pdf.addPage()
                 y = margin
-                pdf.addImage(base64, "PNG", margin, y, imgW, Math.min(imgH, pageH - margin * 2))
-                y += Math.min(imgH, pageH - margin * 2) + 10
-              } else {
-                pdf.addImage(base64, "PNG", margin, y, finalW, finalH)
-                y += finalH + 10
               }
-            } catch {
-              // 忽略
-            }
+              pdf.addImage(base64, "PNG", margin, y, imgW, Math.min(imgH, pageH - margin * 2 - y))
+              y += Math.min(imgH, pageH - margin * 2 - y) + 10
+            })
+          } catch {
+            // 忽略
           }
-        }
+          if (q.grading) {
+            const statusText =
+              q.grading.correct === true ? "[Correct]" :
+              q.grading.correct === "partial" ? "[Partial]" : "[Wrong]"
+            pdf.setFont("helvetica", "bold")
+            pdf.text(`Grading: ${statusText}`, margin, y)
+            y += 14
+            if (q.grading.correctAnswer) {
+              pdf.setFont("helvetica", "normal")
+              const ansLines = pdf.splitTextToSize(`Answer: ${q.grading.correctAnswer}`, pageW - margin * 2)
+              ansLines.forEach((line: string) => {
+                if (y > pageH - 40) { pdf.addPage(); y = margin }
+                pdf.text(line, margin, y)
+                y += 12
+              })
+            }
+            pdf.setFont("helvetica", "normal")
+            const expLines = pdf.splitTextToSize(`Explanation: ${q.grading.explanation}`, pageW - margin * 2)
+            expLines.forEach((line: string) => {
+              if (y > pageH - 40) { pdf.addPage(); y = margin }
+              pdf.text(line, margin, y)
+              y += 12
+            })
+            y += 6
+          }
+        })
         y += 20
       }
       pdf.save(`questions-${Date.now()}.pdf`)
@@ -286,6 +435,7 @@ export function ExportMenu() {
     }
   }
 
+  // 导出 Excel（修复中文乱码）
   const exportExcel = async () => {
     if (images.length === 0) {
       toast.error("没有图片")
@@ -298,38 +448,47 @@ export function ExportMenu() {
       images.forEach((img, i) => {
         if (img.questions.length === 0) {
           rows.push({
-            图片序号: i + 1,
-            图片名: img.name,
-            来源: img.source === "camera" ? "拍照" : "上传",
-            题号: "",
-            题目内容: "（未识别到题目）",
-            配图数: 0,
+            "图片序号": i + 1,
+            "图片名": img.name,
+            "来源": img.source === "camera" ? "拍照" : img.source === "merged" ? "合并" : "上传",
+            "题号": "",
+            "类型": "",
+            "题目内容": "（未识别到题目）",
+            "配图数": 0,
+            "批改结果": "",
+            "正确答案": "",
+            "解析": "",
           })
         } else {
           img.questions.forEach((q, qi) => {
+            const gradingStatus =
+              q.grading?.correct === true ? "正确" :
+              q.grading?.correct === "partial" ? "部分正确" :
+              q.grading?.correct === false ? "错误" : ""
             rows.push({
-              图片序号: i + 1,
-              图片名: img.name,
-              来源: img.source === "camera" ? "拍照" : "上传",
-              题号: q.number || String(qi + 1),
-              题目内容: q.content,
-              配图数: q.images.length,
+              "图片序号": i + 1,
+              "图片名": img.name,
+              "来源": img.source === "camera" ? "拍照" : img.source === "merged" ? "合并" : "上传",
+              "题号": q.number || String(qi + 1),
+              "类型": q.kind === "passage" ? "阅读材料" : q.kind === "passage_question" ? "阅读理解题" : "普通题",
+              "题目内容": q.content,
+              "配图数": q.images.length,
+              "批改结果": gradingStatus,
+              "正确答案": q.grading?.correctAnswer || "",
+              "解析": q.grading?.explanation || "",
             })
           })
         }
       })
       const ws = XLSX.utils.json_to_sheet(rows)
-      // 列宽
       ws["!cols"] = [
-        { wch: 8 },
-        { wch: 24 },
-        { wch: 8 },
-        { wch: 10 },
-        { wch: 60 },
-        { wch: 8 },
+        { wch: 8 }, { wch: 24 }, { wch: 8 }, { wch: 10 },
+        { wch: 12 }, { wch: 50 }, { wch: 8 }, { wch: 10 },
+        { wch: 30 }, { wch: 60 },
       ]
       const wb = XLSX.utils.book_new()
       XLSX.utils.book_append_sheet(wb, ws, "题目")
+      // 修复中文乱码：xlsx 默认就支持 UTF-8，但需确保所有字符串都是 UTF-8
       XLSX.writeFile(wb, `questions-${Date.now()}.xlsx`)
       toast.success("已导出 Excel")
     } catch (e) {
@@ -346,19 +505,22 @@ export function ExportMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={busy}>
-          {busy ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Download className="size-4 mr-1" />}
-          导出
+        <Button variant="outline" size="sm" disabled={busy} className="shrink-0">
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+          <span className="hidden sm:ml-1 sm:inline">导出</span>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-56 max-h-[80vh] overflow-y-auto">
         <DropdownMenuLabel>导出当前所有图片</DropdownMenuLabel>
         <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={exportWithBoxes}>
+          <ImageIcon className="size-4 mr-2" /> 整张带框图（PNG）
+        </DropdownMenuItem>
         <DropdownMenuItem onClick={exportCroppedImages}>
           <Images className="size-4 mr-2" /> 题目截图（PNG 多文件）
         </DropdownMenuItem>
         <DropdownMenuItem onClick={exportWord}>
-          <FileType className="size-4 mr-2" /> Word 文档（.docx）
+          <FileType className="size-4 mr-2" /> Word 文档
         </DropdownMenuItem>
         <DropdownMenuItem onClick={exportPDF}>
           <FileText className="size-4 mr-2" /> PDF 文档
@@ -371,7 +533,7 @@ export function ExportMenu() {
           <FileJson className="size-4 mr-2" /> JSON 数据
         </DropdownMenuItem>
         <DropdownMenuItem onClick={exportMarkdown}>
-          <FileText className="size-4 mr-2" /> Markdown
+          <FileText className="size-4 mr-2" /> Markdown（含公式）
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={copyAll}>

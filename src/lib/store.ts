@@ -2,8 +2,9 @@
 
 import { create } from "zustand"
 import { uid } from "./utils"
-import type { ImageItem, Question, BBox, ImageAdjustments } from "./types"
+import type { ImageItem, Question, BBox, ImageAdjustments, GradingResult, AIProviderConfig } from "./types"
 import { DEFAULT_ADJUSTMENTS } from "./types"
+import { loadAIConfig, saveAIConfig } from "./ai-config"
 
 interface HistoryEntry {
   images: ImageItem[]
@@ -15,9 +16,14 @@ interface DetectorState {
   images: ImageItem[]
   currentImageId: string | null
   selectedQuestionId: string | null
+  // 跨页合并的多选
+  selectedImageIds: string[]
 
   // 全局开关
-  autoDetect: boolean // 上传/拍照后是否自动识别
+  autoDetect: boolean
+  sidebarOpen: boolean
+  rightPanelOpen: boolean
+  aiConfig: AIProviderConfig
 
   // 历史
   past: HistoryEntry[]
@@ -25,17 +31,22 @@ interface DetectorState {
   commit: (fn: (s: DetectorState) => Partial<DetectorState>) => void
   undo: () => void
   redo: () => void
-  canUndo: () => boolean
-  canRedo: () => boolean
 
   // 全局开关
   setAutoDetect: (v: boolean) => void
+  setSidebarOpen: (v: boolean) => void
+  setRightPanelOpen: (v: boolean) => void
+  toggleSidebar: () => void
+  toggleRightPanel: () => void
+  setAIConfig: (cfg: AIProviderConfig) => void
 
   // 图片管理
   addImage: (img: Omit<ImageItem, "id" | "questions" | "detected" | "detecting" | "createdAt" | "adjustments">) => string
   removeImage: (id: string) => void
   clearAll: () => void
   setCurrentImage: (id: string | null) => void
+  toggleSelectImage: (id: string) => void
+  clearSelection: () => void
 
   // 题目管理
   setQuestions: (imageId: string, questions: Question[], method?: "ai" | "offline") => void
@@ -49,6 +60,9 @@ interface DetectorState {
   removeSubImage: (imageId: string, qid: string, subId: string) => void
   setSubImageData: (imageId: string, qid: string, subId: string, dataUrl: string) => void
 
+  // 批改
+  setGrading: (imageId: string, qid: string, grading: GradingResult | undefined) => void
+
   // 识别状态
   setDetecting: (imageId: string, v: boolean) => void
   setDetected: (imageId: string, v: boolean) => void
@@ -61,11 +75,15 @@ interface DetectorState {
   getCurrentImage: () => ImageItem | undefined
 }
 
-const MAX_HISTORY = 30
+const MAX_HISTORY = 50
 
 function snapshot(s: DetectorState): HistoryEntry {
   return {
-    images: s.images.map((im) => ({ ...im, questions: im.questions.map((q) => ({ ...q, images: q.images.map((si) => ({ ...si })) })) })),
+    images: s.images.map((im) => ({
+      ...im,
+      questions: im.questions.map((q) => ({ ...q, images: q.images.map((si) => ({ ...si })) })),
+      adjustments: { ...im.adjustments },
+    })),
     currentImageId: s.currentImageId,
     selectedQuestionId: s.selectedQuestionId,
   }
@@ -75,7 +93,12 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   images: [],
   currentImageId: null,
   selectedQuestionId: null,
+  selectedImageIds: [],
   autoDetect: true,
+  sidebarOpen: true,
+  rightPanelOpen: true,
+  aiConfig: loadAIConfig(),
+
   past: [],
   future: [],
 
@@ -112,10 +135,15 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       }
     }),
 
-  canUndo: () => get().past.length > 0,
-  canRedo: () => get().future.length > 0,
-
   setAutoDetect: (v) => set({ autoDetect: v }),
+  setSidebarOpen: (v) => set({ sidebarOpen: v }),
+  setRightPanelOpen: (v) => set({ rightPanelOpen: v }),
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
+  setAIConfig: (cfg) => {
+    saveAIConfig(cfg)
+    set({ aiConfig: cfg })
+  },
 
   addImage: (img) => {
     const id = uid("img")
@@ -147,13 +175,27 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
     get().commit((s) => {
       const images = s.images.filter((x) => x.id !== id)
       const currentImageId = s.currentImageId === id ? images[0]?.id ?? null : s.currentImageId
-      return { images, currentImageId, selectedQuestionId: null }
+      return {
+        images,
+        currentImageId,
+        selectedQuestionId: null,
+        selectedImageIds: s.selectedImageIds.filter((x) => x !== id),
+      }
     }),
 
   clearAll: () =>
-    get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null })),
+    get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null, selectedImageIds: [] })),
 
   setCurrentImage: (id) => set({ currentImageId: id, selectedQuestionId: null }),
+
+  toggleSelectImage: (id) =>
+    set((s) => ({
+      selectedImageIds: s.selectedImageIds.includes(id)
+        ? s.selectedImageIds.filter((x) => x !== id)
+        : [...s.selectedImageIds, id],
+    })),
+
+  clearSelection: () => set({ selectedImageIds: [] }),
 
   setQuestions: (imageId, questions, method) =>
     set((s) => {
@@ -186,6 +228,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
                   content: q?.content ?? "",
                   bbox: q?.bbox ?? { x: 0.1, y: 0.4, width: 0.8, height: 0.15 },
                   images: q?.images ?? [],
+                  kind: q?.kind ?? "normal",
                 },
               ],
             }
@@ -277,6 +320,18 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
                     }
                   : q
               ),
+            }
+          : x
+      ),
+    })),
+
+  setGrading: (imageId, qid, grading) =>
+    set((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId
+          ? {
+              ...x,
+              questions: x.questions.map((q) => (q.id === qid ? { ...q, grading } : q)),
             }
           : x
       ),

@@ -16,10 +16,11 @@ import {
   RefreshCw,
   Undo2,
   Redo2,
+  Wand2,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore, sanitizeBBox } from "@/lib/store"
-import { detectQuestions } from "@/lib/detect-service"
+import { detectQuestions, ocrQuestion } from "@/lib/detect-service"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { cn, clamp } from "@/lib/utils"
@@ -52,6 +53,7 @@ export function QuestionCanvas() {
   const setDetecting = useDetectorStore((s) => s.setDetecting)
   const setAdjustments = useDetectorStore((s) => s.setAdjustments)
   const resetAdjustments = useDetectorStore((s) => s.resetAdjustments)
+  const aiConfig = useDetectorStore((s) => s.aiConfig)
   const undo = useDetectorStore((s) => s.undo)
   const redo = useDetectorStore((s) => s.redo)
   const canUndo = useDetectorStore((s) => s.past.length > 0)
@@ -61,10 +63,11 @@ export function QuestionCanvas() {
   const imgRef = useRef<HTMLImageElement>(null)
   const [imgSize, setImgSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 })
   const [dragMode, setDragMode] = useState<DragMode>(null)
-  const [zoom, setZoom] = useState(1) // 1 = fit, >1 = 放大
+  const [zoom, setZoom] = useState(1)
   const [showAdjust, setShowAdjust] = useState(false)
+  const [ocrLoading, setOcrLoading] = useState(false)
 
-  // 使用 ResizeObserver 监听容器尺寸变化
+  // ResizeObserver 监听容器尺寸变化
   useEffect(() => {
     if (!wrapperRef.current) return
     const ro = new ResizeObserver(() => {
@@ -82,15 +85,12 @@ export function QuestionCanvas() {
     }
   }, [])
 
-  // 切换图片时重置缩放
   useEffect(() => {
     setZoom(1)
   }, [currentImage?.id])
 
-  // 键盘快捷键
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // 仅在画布有焦点时响应
       const target = e.target as HTMLElement
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
@@ -193,22 +193,21 @@ export function QuestionCanvas() {
     setDragMode(null)
   }, [])
 
-  // 自动识别（AI）
+  // AI 识别整张图
   const onDetectAI = useCallback(async () => {
     if (!currentImage) return
     setDetecting(currentImage.id, true)
     selectQuestion(null)
     try {
-      const qs = await detectQuestions(currentImage, "ai")
+      const qs = await detectQuestions(currentImage, "ai", aiConfig)
       setQuestions(currentImage.id, qs, "ai")
       if (qs[0]) selectQuestion(qs[0].id)
       toast.success(`识别到 ${qs.length} 道题目`)
     } catch (e) {
-      const err = e as Error
-      toast.error(`识别失败：${err.message}`)
+      toast.error(`识别失败：${(e as Error).message}`)
       setDetecting(currentImage.id, false)
     }
-  }, [currentImage, selectQuestion, setDetecting, setQuestions])
+  }, [currentImage, selectQuestion, setDetecting, setQuestions, aiConfig])
 
   // 离线识别
   const onDetectOffline = useCallback(async () => {
@@ -219,13 +218,33 @@ export function QuestionCanvas() {
       const qs = await detectQuestions(currentImage, "offline")
       setQuestions(currentImage.id, qs, "offline")
       if (qs[0]) selectQuestion(qs[0].id)
-      toast.success(`离线识别到 ${qs.length} 道题目（不依赖 AI）`)
+      toast.success(`离线识别到 ${qs.length} 道题目`)
     } catch (e) {
-      const err = e as Error
-      toast.error(`离线识别失败：${err.message}`)
+      toast.error(`离线识别失败：${(e as Error).message}`)
       setDetecting(currentImage.id, false)
     }
   }, [currentImage, selectQuestion, setDetecting, setQuestions])
+
+  // AI 识别选中框内的题目文字（手动框 + AI 识别）
+  const onOCRSelected = useCallback(async () => {
+    if (!currentImage || !selectedQuestionId) return
+    const q = currentImage.questions.find((x) => x.id === selectedQuestionId)
+    if (!q) return
+    setOcrLoading(true)
+    try {
+      const res = await ocrQuestion(currentImage, q.bbox, aiConfig)
+      updateQuestion(currentImage.id, q.id, {
+        number: res.number || q.number,
+        content: res.content || q.content,
+        kind: res.kind,
+      })
+      toast.success("已识别题目文字")
+    } catch (e) {
+      toast.error(`识别失败：${(e as Error).message}`)
+    } finally {
+      setOcrLoading(false)
+    }
+  }, [currentImage, selectedQuestionId, updateQuestion, aiConfig])
 
   const onAddBox = useCallback(() => {
     if (!currentImage) return
@@ -242,7 +261,6 @@ export function QuestionCanvas() {
     removeQuestion(currentImage.id, selectedQuestionId)
   }, [currentImage, selectedQuestionId, removeQuestion])
 
-  // 双击空白处新建框
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!currentImage) return
@@ -277,147 +295,85 @@ export function QuestionCanvas() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* 工具栏 */}
-      <div className="flex items-center justify-between gap-1.5 px-3 py-2 border-b flex-wrap">
-        <div className="text-xs text-muted-foreground truncate max-w-[35%]">
-          {currentImage.name} · {currentImage.width}×{currentImage.height}
-          {currentImage.detectMethod && (
-            <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted">
-              {currentImage.detectMethod === "ai" ? "AI 识别" : "离线识别"}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1 flex-wrap">
-          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={undo} disabled={!canUndo} title="撤销 Ctrl+Z">
+      {/* 工具栏 - 可滚动避免按钮被截断 */}
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b overflow-x-auto shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
+          <Button variant="ghost" size="sm" className="size-8 p-0" onClick={undo} disabled={!canUndo} title="撤销 Ctrl+Z">
             <Undo2 className="size-4" />
           </Button>
-          <Button variant="ghost" size="sm" className="h-8 px-2" onClick={redo} disabled={!canRedo} title="重做 Ctrl+Y">
+          <Button variant="ghost" size="sm" className="size-8 p-0" onClick={redo} disabled={!canRedo} title="重做 Ctrl+Y">
             <Redo2 className="size-4" />
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={onAddBox}
-            disabled={detecting}
-            title="手动添加一个题目框（也可双击图片新建）"
-          >
-            <Plus className="size-4 mr-1" /> 添加框
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={onRemoveSelected}
-            disabled={!selectedQuestionId || detecting}
-            title="删除当前选中的题目框（Delete 键）"
-          >
-            <Trash2 className="size-4 mr-1" /> 删除
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-8"
-            onClick={onDetectOffline}
-            disabled={detecting}
-            title="使用纯 JS 算法识别（不调用 AI）"
-          >
-            <Cpu className="size-4 mr-1" /> 离线识别
-          </Button>
-          <Button size="sm" className="h-8 bg-rose-500 hover:bg-rose-600" onClick={onDetectAI} disabled={detecting}>
-            {detecting ? <Loader2 className="size-4 mr-1 animate-spin" /> : <Sparkles className="size-4 mr-1" />}
-            {detecting ? "识别中…" : "AI 识别"}
-          </Button>
         </div>
-      </div>
-
-      {/* 第二行：缩放和图像调整 */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-b bg-muted/30 flex-wrap text-xs">
-        <div className="flex items-center gap-1">
+        <div className="h-4 w-px bg-border shrink-0" />
+        <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onAddBox} disabled={detecting} title="添加框">
+          <Plus className="size-4" />
+          <span className="hidden md:ml-1 md:inline">添加框</span>
+        </Button>
+        <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onRemoveSelected} disabled={!selectedQuestionId || detecting} title="删除框">
+          <Trash2 className="size-4" />
+          <span className="hidden md:ml-1 md:inline">删除</span>
+        </Button>
+        {selectedQuestionId && (
+          <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onOCRSelected} disabled={ocrLoading || detecting} title="AI 识别该框内题目文字">
+            {ocrLoading ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
+            <span className="hidden md:ml-1 md:inline">AI 识别</span>
+          </Button>
+        )}
+        <div className="h-4 w-px bg-border shrink-0" />
+        <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onDetectOffline} disabled={detecting} title="离线算法识别">
+          <Cpu className="size-4" />
+          <span className="hidden md:ml-1 md:inline">离线</span>
+        </Button>
+        <Button size="sm" className="h-8 shrink-0 bg-rose-500 hover:bg-rose-600" onClick={onDetectAI} disabled={detecting}>
+          {detecting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+          <span className="ml-1">{detecting ? "识别中…" : "AI 识别"}</span>
+        </Button>
+        <div className="h-4 w-px bg-border shrink-0 ml-auto" />
+        <div className="flex items-center gap-0.5 shrink-0">
           <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => setZoom((z) => clamp(z - 0.2, 1, 4))} title="缩小 -">
             <ZoomOut className="size-3.5" />
           </Button>
-          <span className="text-muted-foreground w-12 text-center">{Math.round(zoom * 100)}%</span>
+          <span className="text-xs text-muted-foreground w-10 text-center tabular-nums">{Math.round(zoom * 100)}%</span>
           <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => setZoom((z) => clamp(z + 0.2, 1, 4))} title="放大 +">
             <ZoomIn className="size-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => setZoom(1)} title="重置缩放 0">
+          <Button variant="ghost" size="sm" className="size-7 p-0" onClick={() => setZoom(1)} title="重置 0">
             <Maximize2 className="size-3.5" />
           </Button>
         </div>
-        <div className="h-4 w-px bg-border" />
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7"
-          onClick={() => {
-            // 使用最新的 store 状态获取 rotation
-            const cur = useDetectorStore.getState().images.find((x) => x.id === currentImage.id)
-            const r = cur?.adjustments.rotation ?? 0
-            setAdjustments(currentImage.id, { rotation: (r + 90) % 360 })
-          }}
-          title="旋转 90°"
-        >
-          <RotateCw className="size-3.5 mr-1" /> 旋转
+        <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2" onClick={() => {
+          const cur = useDetectorStore.getState().images.find((x) => x.id === currentImage.id)
+          const r = cur?.adjustments.rotation ?? 0
+          setAdjustments(currentImage.id, { rotation: (r + 90) % 360 })
+        }} title="旋转 90°">
+          <RotateCw className="size-3.5" />
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7"
-          onClick={() => setShowAdjust((v) => !v)}
-          title="图像调整"
-        >
-          <Sun className="size-3.5 mr-1" /> 调整
+        <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2" onClick={() => setShowAdjust((v) => !v)} title="图像调整">
+          <Sun className="size-3.5" />
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7"
-          onClick={() => resetAdjustments(currentImage.id)}
-          title="重置调整"
-        >
-          <RefreshCw className="size-3.5 mr-1" /> 重置
+        <Button variant="ghost" size="sm" className="h-8 shrink-0 px-2" onClick={() => resetAdjustments(currentImage.id)} title="重置调整">
+          <RefreshCw className="size-3.5" />
         </Button>
       </div>
 
       {/* 图像调整面板 */}
       {showAdjust && (
-        <div className="px-4 py-3 border-b bg-muted/20 space-y-2.5">
+        <div className="px-4 py-2 border-b bg-muted/20 space-y-1.5 shrink-0">
           <div className="flex items-center gap-3">
-            <span className="text-xs w-16 text-muted-foreground">亮度</span>
-            <Slider
-              value={[adj.brightness]}
-              min={0.5}
-              max={1.5}
-              step={0.05}
-              onValueChange={([v]) => setAdjustments(currentImage.id, { brightness: v })}
-              className="flex-1 max-w-md"
-            />
-            <span className="text-xs w-10 text-right tabular-nums">{adj.brightness.toFixed(2)}</span>
+            <span className="text-xs w-12 text-muted-foreground shrink-0">亮度</span>
+            <Slider value={[adj.brightness]} min={0.5} max={1.5} step={0.05} onValueChange={([v]) => setAdjustments(currentImage.id, { brightness: v })} className="flex-1 max-w-md" />
+            <span className="text-xs w-10 text-right tabular-nums shrink-0">{adj.brightness.toFixed(2)}</span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs w-16 text-muted-foreground">对比度</span>
-            <Slider
-              value={[adj.contrast]}
-              min={0.5}
-              max={1.5}
-              step={0.05}
-              onValueChange={([v]) => setAdjustments(currentImage.id, { contrast: v })}
-              className="flex-1 max-w-md"
-            />
-            <span className="text-xs w-10 text-right tabular-nums">{adj.contrast.toFixed(2)}</span>
+            <span className="text-xs w-12 text-muted-foreground shrink-0">对比度</span>
+            <Slider value={[adj.contrast]} min={0.5} max={1.5} step={0.05} onValueChange={([v]) => setAdjustments(currentImage.id, { contrast: v })} className="flex-1 max-w-md" />
+            <span className="text-xs w-10 text-right tabular-nums shrink-0">{adj.contrast.toFixed(2)}</span>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs w-16 text-muted-foreground">饱和度</span>
-            <Slider
-              value={[adj.saturate]}
-              min={0}
-              max={2}
-              step={0.05}
-              onValueChange={([v]) => setAdjustments(currentImage.id, { saturate: v })}
-              className="flex-1 max-w-md"
-            />
-            <span className="text-xs w-10 text-right tabular-nums">{adj.saturate.toFixed(2)}</span>
+            <span className="text-xs w-12 text-muted-foreground shrink-0">饱和度</span>
+            <Slider value={[adj.saturate]} min={0} max={2} step={0.05} onValueChange={([v]) => setAdjustments(currentImage.id, { saturate: v })} className="flex-1 max-w-md" />
+            <span className="text-xs w-10 text-right tabular-nums shrink-0">{adj.saturate.toFixed(2)}</span>
           </div>
         </div>
       )}
@@ -449,7 +405,7 @@ export function QuestionCanvas() {
             style={{
               filter,
               transform: `rotate(${adj.rotation}deg)`,
-              maxHeight: "calc(100vh - 280px)",
+              maxHeight: "calc(100dvh - 220px)",
               maxWidth: "100%",
             }}
             draggable={false}
@@ -471,6 +427,24 @@ export function QuestionCanvas() {
                 const top = q.bbox.y * imgSize.h
                 const w = q.bbox.width * imgSize.w
                 const h = q.bbox.height * imgSize.h
+                // 阅读理解文章用蓝色，阅读理解题目用紫色，普通用绿色
+                const colorCls = q.kind === "passage"
+                  ? "border-blue-500 bg-blue-500/10"
+                  : q.kind === "passage_question"
+                  ? "border-purple-500 bg-purple-500/10"
+                  : "border-emerald-500 bg-emerald-500/10 hover:border-emerald-600"
+                const selColor = q.kind === "passage"
+                  ? "border-blue-600 bg-blue-500/20"
+                  : q.kind === "passage_question"
+                  ? "border-purple-600 bg-purple-500/20"
+                  : "border-rose-500 bg-rose-500/10"
+                const labelBg = q.kind === "passage"
+                  ? "bg-blue-500"
+                  : q.kind === "passage_question"
+                  ? "bg-purple-500"
+                  : isSel
+                  ? "bg-rose-500"
+                  : "bg-emerald-500"
                 return (
                   <div
                     key={q.id}
@@ -481,21 +455,30 @@ export function QuestionCanvas() {
                     }}
                     className={cn(
                       "absolute cursor-move border-2 transition-colors",
-                      isSel
-                        ? "border-rose-500 bg-rose-500/10 z-10"
-                        : "border-emerald-500 bg-emerald-500/10 hover:border-emerald-600"
+                      isSel ? selColor : colorCls,
+                      isSel && "z-10"
                     )}
                     style={{ left, top, width: w, height: h }}
                   >
                     <div
                       className={cn(
-                        "absolute -top-5 left-0 text-xs px-1.5 py-0.5 rounded-t-md font-medium whitespace-nowrap",
-                        isSel ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"
+                        "absolute -top-5 left-0 text-xs px-1.5 py-0.5 rounded-t-md font-medium whitespace-nowrap text-white",
+                        labelBg
                       )}
                     >
-                      {q.number ? `第 ${q.number} 题` : "未编号"}
-                      {q.images.length > 0 && (
-                        <span className="ml-1 opacity-80">· {q.images.length} 图</span>
+                      {q.kind === "passage"
+                        ? "阅读材料"
+                        : q.kind === "passage_question"
+                        ? `第 ${q.number} 题`
+                        : q.number
+                        ? `第 ${q.number} 题`
+                        : "未编号"}
+                      {q.crossPage && <span className="ml-1 opacity-80">·跨页</span>}
+                      {q.images.length > 0 && <span className="ml-1 opacity-80">·{q.images.length}图</span>}
+                      {q.grading && (
+                        <span className="ml-1 opacity-80">
+                          ·{q.grading.correct === true ? "✓" : q.grading.correct === "partial" ? "△" : "✗"}
+                        </span>
                       )}
                     </div>
                     {isSel &&
@@ -525,6 +508,21 @@ export function QuestionCanvas() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* 底部状态栏 */}
+      <div className="border-t px-3 py-1 text-xs text-muted-foreground flex items-center gap-2 shrink-0 overflow-x-auto">
+        <span className="shrink-0 truncate max-w-[40%]">{currentImage.name}</span>
+        <span className="shrink-0">·</span>
+        <span className="shrink-0">{currentImage.width}×{currentImage.height}</span>
+        {currentImage.detectMethod && (
+          <span className="shrink-0 px-1.5 py-0.5 rounded-full bg-muted">
+            {currentImage.detectMethod === "ai" ? "AI 识别" : "离线识别"}
+          </span>
+        )}
+        {currentImage.questions.length > 0 && (
+          <span className="shrink-0">{currentImage.questions.length} 道题</span>
+        )}
       </div>
     </div>
   )

@@ -2,38 +2,120 @@
 
 import { create } from "zustand"
 import { uid } from "./utils"
-import type { ImageItem, Question, BBox } from "./types"
+import type { ImageItem, Question, BBox, ImageAdjustments } from "./types"
+import { DEFAULT_ADJUSTMENTS } from "./types"
+
+interface HistoryEntry {
+  images: ImageItem[]
+  currentImageId: string | null
+  selectedQuestionId: string | null
+}
 
 interface DetectorState {
   images: ImageItem[]
   currentImageId: string | null
   selectedQuestionId: string | null
 
+  // 全局开关
+  autoDetect: boolean // 上传/拍照后是否自动识别
+
+  // 历史
+  past: HistoryEntry[]
+  future: HistoryEntry[]
+  commit: (fn: (s: DetectorState) => Partial<DetectorState>) => void
+  undo: () => void
+  redo: () => void
+  canUndo: () => boolean
+  canRedo: () => boolean
+
+  // 全局开关
+  setAutoDetect: (v: boolean) => void
+
   // 图片管理
-  addImage: (img: Omit<ImageItem, "id" | "questions" | "detected" | "detecting" | "createdAt">) => string
+  addImage: (img: Omit<ImageItem, "id" | "questions" | "detected" | "detecting" | "createdAt" | "adjustments">) => string
   removeImage: (id: string) => void
   clearAll: () => void
   setCurrentImage: (id: string | null) => void
 
   // 题目管理
-  setQuestions: (imageId: string, questions: Question[]) => void
+  setQuestions: (imageId: string, questions: Question[], method?: "ai" | "offline") => void
   addQuestion: (imageId: string, q?: Partial<Question>) => string
   updateQuestion: (imageId: string, qid: string, patch: Partial<Question>) => void
   removeQuestion: (imageId: string, qid: string) => void
   selectQuestion: (qid: string | null) => void
 
+  // 配图管理
+  addSubImage: (imageId: string, qid: string, bbox?: BBox) => void
+  removeSubImage: (imageId: string, qid: string, subId: string) => void
+  setSubImageData: (imageId: string, qid: string, subId: string, dataUrl: string) => void
+
   // 识别状态
   setDetecting: (imageId: string, v: boolean) => void
   setDetected: (imageId: string, v: boolean) => void
 
+  // 图像调整
+  setAdjustments: (imageId: string, adj: Partial<ImageAdjustments>) => void
+  resetAdjustments: (imageId: string) => void
+
   // 工具
   getCurrentImage: () => ImageItem | undefined
+}
+
+const MAX_HISTORY = 30
+
+function snapshot(s: DetectorState): HistoryEntry {
+  return {
+    images: s.images.map((im) => ({ ...im, questions: im.questions.map((q) => ({ ...q, images: q.images.map((si) => ({ ...si })) })) })),
+    currentImageId: s.currentImageId,
+    selectedQuestionId: s.selectedQuestionId,
+  }
 }
 
 export const useDetectorStore = create<DetectorState>((set, get) => ({
   images: [],
   currentImageId: null,
   selectedQuestionId: null,
+  autoDetect: true,
+  past: [],
+  future: [],
+
+  commit: (fn) =>
+    set((s) => {
+      const snap = snapshot(s)
+      const patch = fn(s)
+      const newPast = [...s.past, snap]
+      if (newPast.length > MAX_HISTORY) newPast.shift()
+      return { ...patch, past: newPast, future: [] }
+    }),
+
+  undo: () =>
+    set((s) => {
+      if (s.past.length === 0) return s
+      const prev = s.past[s.past.length - 1]
+      const cur = snapshot(s)
+      return {
+        ...prev,
+        past: s.past.slice(0, -1),
+        future: [cur, ...s.future].slice(0, MAX_HISTORY),
+      }
+    }),
+
+  redo: () =>
+    set((s) => {
+      if (s.future.length === 0) return s
+      const next = s.future[0]
+      const cur = snapshot(s)
+      return {
+        ...next,
+        past: [...s.past, cur].slice(-MAX_HISTORY),
+        future: s.future.slice(1),
+      }
+    }),
+
+  canUndo: () => get().past.length > 0,
+  canRedo: () => get().future.length > 0,
+
+  setAutoDetect: (v) => set({ autoDetect: v }),
 
   addImage: (img) => {
     const id = uid("img")
@@ -43,45 +125,71 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       detected: false,
       detecting: false,
       createdAt: Date.now(),
+      adjustments: { ...DEFAULT_ADJUSTMENTS },
+      detectMethod: null,
       ...img,
     }
-    set((s) => ({
-      images: [...s.images, item],
-      currentImageId: s.currentImageId ?? id,
-    }))
+    set((s) => {
+      const snap = snapshot(s)
+      const newPast = [...s.past, snap]
+      if (newPast.length > MAX_HISTORY) newPast.shift()
+      return {
+        images: [...s.images, item],
+        currentImageId: s.currentImageId ?? id,
+        past: newPast,
+        future: [],
+      }
+    })
     return id
   },
 
   removeImage: (id) =>
-    set((s) => {
+    get().commit((s) => {
       const images = s.images.filter((x) => x.id !== id)
-      const currentImageId =
-        s.currentImageId === id ? images[0]?.id ?? null : s.currentImageId
-      return { images, currentImageId }
+      const currentImageId = s.currentImageId === id ? images[0]?.id ?? null : s.currentImageId
+      return { images, currentImageId, selectedQuestionId: null }
     }),
 
-  clearAll: () => set({ images: [], currentImageId: null, selectedQuestionId: null }),
+  clearAll: () =>
+    get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null })),
 
   setCurrentImage: (id) => set({ currentImageId: id, selectedQuestionId: null }),
 
-  setQuestions: (imageId, questions) =>
-    set((s) => ({
-      images: s.images.map((x) =>
-        x.id === imageId ? { ...x, questions, detected: true, detecting: false } : x
-      ),
-    })),
+  setQuestions: (imageId, questions, method) =>
+    set((s) => {
+      const snap = snapshot(s)
+      const newPast = [...s.past, snap]
+      if (newPast.length > MAX_HISTORY) newPast.shift()
+      return {
+        images: s.images.map((x) =>
+          x.id === imageId
+            ? { ...x, questions, detected: true, detecting: false, detectMethod: method ?? x.detectMethod ?? "ai" }
+            : x
+        ),
+        past: newPast,
+        future: [],
+      }
+    }),
 
   addQuestion: (imageId, q) => {
     const qid = uid("q")
-    const newQ: Question = {
-      id: qid,
-      number: q?.number ?? "",
-      content: q?.content ?? "",
-      bbox: q?.bbox ?? { x: 0.1, y: 0.1, width: 0.8, height: 0.15 },
-    }
-    set((s) => ({
+    get().commit((s) => ({
       images: s.images.map((x) =>
-        x.id === imageId ? { ...x, questions: [...x.questions, newQ] } : x
+        x.id === imageId
+          ? {
+              ...x,
+              questions: [
+                ...x.questions,
+                {
+                  id: qid,
+                  number: q?.number ?? "",
+                  content: q?.content ?? "",
+                  bbox: q?.bbox ?? { x: 0.1, y: 0.4, width: 0.8, height: 0.15 },
+                  images: q?.images ?? [],
+                },
+              ],
+            }
+          : x
       ),
       selectedQuestionId: qid,
     }))
@@ -89,28 +197,90 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   },
 
   updateQuestion: (imageId, qid, patch) =>
-    set((s) => ({
-      images: s.images.map((x) =>
-        x.id === imageId
-          ? {
-              ...x,
-              questions: x.questions.map((q) => (q.id === qid ? { ...q, ...patch } : q)),
-            }
-          : x
-      ),
-    })),
+    set((s) => {
+      const snap = snapshot(s)
+      const newPast = [...s.past, snap]
+      if (newPast.length > MAX_HISTORY) newPast.shift()
+      return {
+        images: s.images.map((x) =>
+          x.id === imageId
+            ? {
+                ...x,
+                questions: x.questions.map((q) => (q.id === qid ? { ...q, ...patch } : q)),
+              }
+            : x
+        ),
+        past: newPast,
+        future: [],
+      }
+    }),
 
   removeQuestion: (imageId, qid) =>
-    set((s) => ({
+    get().commit((s) => ({
       images: s.images.map((x) =>
-        x.id === imageId
-          ? { ...x, questions: x.questions.filter((q) => q.id !== qid) }
-          : x
+        x.id === imageId ? { ...x, questions: x.questions.filter((q) => q.id !== qid) } : x
       ),
       selectedQuestionId: s.selectedQuestionId === qid ? null : s.selectedQuestionId,
     })),
 
   selectQuestion: (qid) => set({ selectedQuestionId: qid }),
+
+  addSubImage: (imageId, qid, bbox) => {
+    const subId = uid("sub")
+    get().commit((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId
+          ? {
+              ...x,
+              questions: x.questions.map((q) =>
+                q.id === qid
+                  ? {
+                      ...q,
+                      images: [
+                        ...q.images,
+                        { id: subId, bbox: bbox ?? { x: 0.1, y: 0.1, width: 0.3, height: 0.3 } },
+                      ],
+                    }
+                  : q
+              ),
+            }
+          : x
+      ),
+    }))
+  },
+
+  removeSubImage: (imageId, qid, subId) =>
+    get().commit((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId
+          ? {
+              ...x,
+              questions: x.questions.map((q) =>
+                q.id === qid ? { ...q, images: q.images.filter((si) => si.id !== subId) } : q
+              ),
+            }
+          : x
+      ),
+    })),
+
+  setSubImageData: (imageId, qid, subId, dataUrl) =>
+    set((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId
+          ? {
+              ...x,
+              questions: x.questions.map((q) =>
+                q.id === qid
+                  ? {
+                      ...q,
+                      images: q.images.map((si) => (si.id === subId ? { ...si, dataUrl } : si)),
+                    }
+                  : q
+              ),
+            }
+          : x
+      ),
+    })),
 
   setDetecting: (imageId, v) =>
     set((s) => ({
@@ -120,6 +290,20 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   setDetected: (imageId, v) =>
     set((s) => ({
       images: s.images.map((x) => (x.id === imageId ? { ...x, detected: v } : x)),
+    })),
+
+  setAdjustments: (imageId, adj) =>
+    set((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId ? { ...x, adjustments: { ...x.adjustments, ...adj } } : x
+      ),
+    })),
+
+  resetAdjustments: (imageId) =>
+    set((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId ? { ...x, adjustments: { ...DEFAULT_ADJUSTMENTS } } : x
+      ),
     })),
 
   getCurrentImage: () => {

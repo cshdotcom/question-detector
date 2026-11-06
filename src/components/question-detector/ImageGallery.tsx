@@ -64,9 +64,16 @@ export function ImageGallery() {
                   <span className="flex items-center gap-1">
                     <Check className="size-2.5 text-emerald-400" />
                     {img.questions.length} 题
+                    {img.detectMethod && (
+                      <span className="opacity-70">
+                        · {img.detectMethod === "ai" ? "AI" : "算法"}
+                      </span>
+                    )}
                   </span>
                 ) : img.detecting ? (
-                  <span className="text-amber-300">识别中…</span>
+                  <span className="text-amber-300">
+                    {img.detectMethod === "offline" ? "算法识别中…" : "识别中…"}
+                  </span>
                 ) : (
                   <span className="opacity-70">未识别</span>
                 )}

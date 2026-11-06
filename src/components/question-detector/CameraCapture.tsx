@@ -2,11 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Camera, CameraOff, RefreshCw, X, SwitchCamera, CheckCircle2, Loader2 } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
-import { uid } from "@/lib/utils"
+import { detectQuestions } from "@/lib/detect-service"
 
 interface CameraCaptureProps {
   open: boolean
@@ -21,8 +19,13 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment")
   const [shotCount, setShotCount] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [autoDetectPending, setAutoDetectPending] = useState<string | null>(null)
 
   const addImage = useDetectorStore((s) => s.addImage)
+  const setCurrentImage = useDetectorStore((s) => s.setCurrentImage)
+  const setDetecting = useDetectorStore((s) => s.setDetecting)
+  const setQuestions = useDetectorStore((s) => s.setQuestions)
+  const autoDetect = useDetectorStore((s) => s.autoDetect)
 
   const stopStream = useCallback(() => {
     if (streamRef.current) {
@@ -36,7 +39,6 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     setError(null)
     setBusy(true)
     try {
-      // 先尝试请求权限，浏览器会直接弹出权限请求，不经过系统文件选择
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: facingMode },
@@ -45,7 +47,6 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
         },
         audio: false,
       })
-      // 保存以便停止
       streamRef.current = stream
       if (videoRef.current) {
         videoRef.current.srcObject = stream
@@ -62,7 +63,7 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
         msg = "摄像头被其他程序占用，请关闭后重试。"
       } else if (err.name === "OverconstrainedError") {
-        msg = "当前摄像头不满足请求的分辨率，请切换摄像头或降低分辨率。"
+        msg = "当前摄像头不满足请求的分辨率，可尝试切换摄像头。"
       }
       setError(msg)
       toast.error(msg)
@@ -85,19 +86,17 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     stopStream()
     const next = facingMode === "environment" ? "user" : "environment"
     setFacingMode(next)
-    // 等一帧再启动
     setTimeout(() => startStream(), 50)
   }, [facingMode, startStream, stopStream])
 
-  const capture = useCallback(() => {
+  const capture = useCallback(async () => {
     const video = videoRef.current
     if (!video || !video.videoWidth) {
       toast.error("视频流尚未就绪，请稍候再试")
       return
     }
     const canvas = document.createElement("canvas")
-    // 限制最大边到 1600，避免 base64 过大
-    const maxSide = 1600
+    const maxSide = 2000
     const ratio = video.videoWidth / video.videoHeight
     let w = video.videoWidth
     let h = video.videoHeight
@@ -117,88 +116,147 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       toast.error("无法创建画布上下文")
       return
     }
-    // 如果是前置摄像头，水平镜像
     if (facingMode === "user") {
       ctx.translate(w, 0)
       ctx.scale(-1, 1)
     }
     ctx.drawImage(video, 0, 0, w, h)
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85)
-    addImage({
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92)
+    const newId = addImage({
       name: `拍照 ${new Date().toLocaleString("zh-CN", { hour12: false })}`,
       dataUrl,
       width: w,
       height: h,
       source: "camera",
     })
-    setShotCount((c) => c + 1)
-    toast.success(`已拍第 ${shotCount + 1} 张`)
-  }, [addImage, facingMode, shotCount])
+    setCurrentImage(newId)
+    const c = shotCount + 1
+    setShotCount(c)
+    toast.success(`已拍第 ${c} 张` + (autoDetect ? "，正在自动识别…" : ""))
+
+    // 自动识别
+    if (autoDetect) {
+      setAutoDetectPending(newId)
+    }
+  }, [addImage, facingMode, shotCount, autoDetect, setCurrentImage])
+
+  // 拍照后异步自动识别
+  useEffect(() => {
+    if (!autoDetectPending) return
+    const imgId = autoDetectPending
+    const img = useDetectorStore.getState().images.find((x) => x.id === imgId)
+    if (!img) {
+      setAutoDetectPending(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      setDetecting(imgId, true)
+      try {
+        const qs = await detectQuestions(img, "ai")
+        if (cancelled) return
+        setQuestions(imgId, qs, "ai")
+        toast.success(`已识别 ${qs.length} 道题目`)
+      } catch (e) {
+        if (cancelled) return
+        const err = e as Error
+        toast.error(`自动识别失败：${err.message}`)
+        setDetecting(imgId, false)
+      } finally {
+        if (!cancelled) setAutoDetectPending(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [autoDetectPending, setDetecting, setQuestions])
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-3xl p-0 overflow-hidden gap-0">
-        <DialogHeader className="p-4 border-b">
-          <DialogTitle className="flex items-center gap-2">
-            <Camera className="size-5" />
-            浏览器相机拍照
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="relative bg-black aspect-[4/3] flex items-center justify-center">
-          <video
-            ref={videoRef}
-            playsInline
-            muted
-            autoPlay
-            className="w-full h-full object-contain"
-            style={{ transform: facingMode === "user" ? "scaleX(-1)" : undefined }}
-          />
-          {!streaming && !error && (
-            <div className="absolute inset-0 flex items-center justify-center text-white/80">
-              <Loader2 className="size-8 animate-spin" />
-              <span className="ml-3">正在启动相机…</span>
-            </div>
-          )}
-          {error && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 p-6 text-center gap-3">
-              <CameraOff className="size-10" />
-              <p className="text-sm leading-relaxed">{error}</p>
-              <Button variant="secondary" size="sm" onClick={startStream} disabled={busy}>
-                <RefreshCw className="size-4 mr-1" /> 重试
-              </Button>
-            </div>
-          )}
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+      {/* 顶部栏 */}
+      <div className="flex items-center justify-between px-4 py-3 text-white">
+        <div className="flex items-center gap-2">
+          <Camera className="size-5" />
+          <span className="font-medium">浏览器相机拍照</span>
           {streaming && (
-            <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded-md flex items-center gap-1">
-              <CheckCircle2 className="size-3.5 text-emerald-400" />
+            <span className="text-xs bg-white/10 px-2 py-0.5 rounded-full flex items-center gap-1">
+              <CheckCircle2 className="size-3 text-emerald-400" />
               已拍 {shotCount} 张
-            </div>
+            </span>
           )}
         </div>
+        <button
+          onClick={onClose}
+          className="p-2 hover:bg-white/10 rounded-full"
+          aria-label="关闭"
+        >
+          <X className="size-5" />
+        </button>
+      </div>
 
-        <DialogFooter className="p-3 border-t flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={switchCamera}
-              disabled={!streaming || busy}
-              title="切换摄像头"
+      {/* 视频区 */}
+      <div className="flex-1 relative flex items-center justify-center">
+        <video
+          ref={videoRef}
+          playsInline
+          muted
+          autoPlay
+          className="w-full h-full object-contain"
+          style={{ transform: facingMode === "user" ? "scaleX(-1)" : undefined }}
+        />
+        {!streaming && !error && (
+          <div className="absolute inset-0 flex items-center justify-center text-white/80">
+            <Loader2 className="size-8 animate-spin" />
+            <span className="ml-3">正在启动相机…</span>
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-white/90 p-6 text-center gap-3">
+            <CameraOff className="size-10" />
+            <p className="text-sm leading-relaxed">{error}</p>
+            <button
+              className="px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 text-sm flex items-center gap-1"
+              onClick={startStream}
+              disabled={busy}
             >
-              <SwitchCamera className="size-4 mr-1" /> 切换
-            </Button>
+              <RefreshCw className="size-4" /> 重试
+            </button>
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={onClose}>
-              <X className="size-4 mr-1" /> 关闭
-            </Button>
-            <Button size="sm" onClick={capture} disabled={!streaming || busy}>
-              <Camera className="size-4 mr-1" /> 拍照
-            </Button>
+        )}
+      </div>
+
+      {/* 底部控制 */}
+      <div className="flex items-center justify-between px-6 py-4 text-white">
+        <button
+          onClick={switchCamera}
+          disabled={!streaming || busy}
+          className="flex flex-col items-center gap-1 disabled:opacity-40"
+        >
+          <div className="size-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center">
+            <SwitchCamera className="size-5" />
           </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <span className="text-xs">切换</span>
+        </button>
+
+        <button
+          onClick={capture}
+          disabled={!streaming || busy}
+          className="size-20 rounded-full border-4 border-white flex items-center justify-center hover:scale-105 transition-transform disabled:opacity-40"
+          aria-label="拍照"
+        >
+          <div className="size-14 rounded-full bg-white" />
+        </button>
+
+        <button
+          onClick={onClose}
+          className="flex flex-col items-center gap-1"
+        >
+          <div className="size-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center">
+            <CheckCircle2 className="size-5" />
+          </div>
+          <span className="text-xs">完成</span>
+        </button>
+      </div>
+    </div>
   )
 }

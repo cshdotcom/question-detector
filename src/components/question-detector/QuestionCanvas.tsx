@@ -306,24 +306,24 @@ export function QuestionCanvas() {
           </Button>
         </div>
         <div className="h-4 w-px bg-border shrink-0" />
-        <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onAddBox} disabled={detecting} title="添加框">
+        <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onAddBox} title="添加框">
           <Plus className="size-4" />
-          <span className="hidden md:ml-1 md:inline">添加框</span>
+          <span className="ml-1">添加框</span>
         </Button>
         <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onRemoveSelected} disabled={!selectedQuestionId || detecting} title="删除框">
           <Trash2 className="size-4" />
-          <span className="hidden md:ml-1 md:inline">删除</span>
+          <span className="ml-1">删除</span>
         </Button>
         {selectedQuestionId && (
           <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onOCRSelected} disabled={ocrLoading || detecting} title="AI 识别该框内题目文字">
             {ocrLoading ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
-            <span className="hidden md:ml-1 md:inline">AI 识别</span>
+            <span className="ml-1">AI 识别</span>
           </Button>
         )}
         <div className="h-4 w-px bg-border shrink-0" />
         <Button variant="outline" size="sm" className="h-8 shrink-0" onClick={onDetectOffline} disabled={detecting} title="离线算法识别">
           <Cpu className="size-4" />
-          <span className="hidden md:ml-1 md:inline">离线</span>
+          <span className="ml-1">离线</span>
         </Button>
         <Button size="sm" className="h-8 shrink-0 bg-rose-500 hover:bg-rose-600" onClick={onDetectAI} disabled={detecting}>
           {detecting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}

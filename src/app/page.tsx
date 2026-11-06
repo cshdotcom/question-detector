@@ -38,9 +38,15 @@ import { MergeImages } from "@/components/question-detector/MergeImages"
 import { AISettingsDialog } from "@/components/question-detector/AISettingsDialog"
 import { useDetectorStore } from "@/lib/store"
 import { useAutoDetect } from "@/lib/use-auto-detect"
+import { loadAIConfig } from "@/lib/ai-config"
 
 export default function Home() {
   useAutoDetect()
+  // 在客户端挂载后从 localStorage 加载 AI 配置（避免 SSR 时读 localStorage 报错）
+  const setAIConfig = useDetectorStore((s) => s.setAIConfig)
+  useEffect(() => {
+    setAIConfig(loadAIConfig())
+  }, [setAIConfig])
   const [cameraOpen, setCameraOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)

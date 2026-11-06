@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { callVisionChat, type ChatMessage } from "@/lib/ai-service"
 import type { AIProviderConfig, BBox } from "@/lib/types"
-import { loadAIConfig } from "@/lib/ai-config"
 
 export const runtime = "nodejs"
 export const maxDuration = 60
@@ -38,10 +37,8 @@ export async function POST(req: Request) {
       dataUrl = `data:image/jpeg;base64,${dataUrl}`
     }
 
-    let config = body.config
-    if (!config) {
-      config = loadAIConfig() as AIProviderConfig
-    }
+    // config 必须由前端传入
+    const config = body.config
 
     const contextText = body.bbox
       ? `用户已用框选中一个区域，bbox 为 ${JSON.stringify(body.bbox)}（相对坐标 0-1，左上角为原点）。请重点识别该区域内的题目。${PROMPT}`

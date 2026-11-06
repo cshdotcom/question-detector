@@ -4,7 +4,7 @@ import { create } from "zustand"
 import { uid } from "./utils"
 import type { ImageItem, Question, BBox, ImageAdjustments, GradingResult, AIProviderConfig } from "./types"
 import { DEFAULT_ADJUSTMENTS } from "./types"
-import { loadAIConfig, saveAIConfig } from "./ai-config"
+import { saveAIConfig, DEFAULT_AI_CONFIG } from "./ai-config"
 
 interface HistoryEntry {
   images: ImageItem[]
@@ -97,7 +97,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   autoDetect: true,
   sidebarOpen: true,
   rightPanelOpen: true,
-  aiConfig: loadAIConfig(),
+  aiConfig: { ...DEFAULT_AI_CONFIG },
 
   past: [],
   future: [],

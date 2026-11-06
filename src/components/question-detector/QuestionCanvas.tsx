@@ -68,6 +68,7 @@ export function QuestionCanvas() {
   const [zoom, setZoom] = useState(1)
   const [showAdjust, setShowAdjust] = useState(false)
   const [ocrLoading, setOcrLoading] = useState(false)
+  const [enhanceLoading, setEnhanceLoading] = useState(false)
 
   // ResizeObserver 监听容器尺寸变化
   useEffect(() => {
@@ -263,6 +264,29 @@ export function QuestionCanvas() {
     removeQuestion(currentImage.id, selectedQuestionId)
   }, [currentImage, selectedQuestionId, removeQuestion])
 
+  // 高清增强整张原图（对比度拉伸 + 锐化），生成新 dataUrl 替换
+  const onEnhanceImage = useCallback(async () => {
+    if (!currentImage || enhanceLoading) return
+    setEnhanceLoading(true)
+    try {
+      const { enhanceFullImage } = await import("@/lib/image-utils")
+      const result = await enhanceFullImage(currentImage.dataUrl)
+      // 用 updateQuestion 不行——需要更新图片本身。用 store 的 set 方法：
+      useDetectorStore.setState((s) => ({
+        images: s.images.map((x) =>
+          x.id === currentImage.id
+            ? { ...x, dataUrl: result.dataUrl, width: result.width, height: result.height }
+            : x
+        ),
+      }))
+      toast.success("已完成高清增强（自动色阶 + 锐化）")
+    } catch (e) {
+      toast.error(`增强失败：${(e as Error).message}`)
+    } finally {
+      setEnhanceLoading(false)
+    }
+  }, [currentImage, enhanceLoading])
+
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!currentImage) return
@@ -378,6 +402,20 @@ export function QuestionCanvas() {
             <span className="text-xs w-12 text-muted-foreground shrink-0">饱和度</span>
             <Slider value={[adj.saturate]} min={0} max={2} step={0.05} onValueChange={([v]) => setAdjustments(currentImage.id, { saturate: v })} className="flex-1 max-w-md" />
             <span className="text-xs w-10 text-right tabular-nums shrink-0">{adj.saturate.toFixed(2)}</span>
+          </div>
+          <div className="flex items-center gap-2 pt-1 border-t">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7"
+              onClick={onEnhanceImage}
+              disabled={enhanceLoading}
+              title="对整张原图应用自动对比度拉伸 + 锐化，让文字更清晰"
+            >
+              {enhanceLoading ? <Loader2 className="size-3.5 mr-1 animate-spin" /> : <Wand2 className="size-3.5 mr-1" />}
+              高清增强（原图）
+            </Button>
+            <span className="text-[10px] text-muted-foreground">自动色阶 + 锐化，文字更清晰</span>
           </div>
         </div>
       )}

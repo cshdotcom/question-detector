@@ -59,6 +59,10 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
   const [selectImagesOpen, setSelectImagesOpen] = useState(false)
   const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
   const [pendingAction, setPendingAction] = useState<"pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped" | null>(null)
+  // 导出选项：是否含题目原图截图 / 配图 / 批改结果
+  const [optIncludeImage, setOptIncludeImage] = useState(true)
+  const [optIncludeSubImages, setOptIncludeSubImages] = useState(true)
+  const [optIncludeGrading, setOptIncludeGrading] = useState(true)
 
   // 当前要导出的图片列表
   const targetImages = currentImageOnly
@@ -67,19 +71,14 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
     ? images.filter((im) => selectedImageIds.has(im.id))
     : images
 
-  // 打开"选择图片"对话框
+  // 打开"选择图片+选项"对话框
   const openSelectImages = (action: "pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped") => {
-    if (currentImageOnly) {
-      // 当页导出直接执行
-      runExport(action, images.filter((im) => im.id === currentImageId))
-      return
-    }
     if (images.length === 0) {
       toast.error("没有图片可导出")
       return
     }
     setPendingAction(action)
-    setSelectedImageIds(new Set(images.map((im) => im.id))) // 默认全选
+    setSelectedImageIds(new Set(images.map((im) => im.id)))
     setSelectImagesOpen(true)
   }
 
@@ -116,11 +115,12 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
       toast.error("没有图片可导出")
       return
     }
+    // 选项仅对 pdf/word/cropped 有意义；markdown/excel/json 始终含批改文本；boxes 始终含图
     if (action === "json") return exportJson(targets)
     if (action === "markdown") return exportMarkdown(targets)
     if (action === "excel") return exportExcel(targets)
     if (action === "boxes") return exportWithBoxes(targets, true)
-    if (action === "cropped") return exportCroppedImages(targets, true)
+    if (action === "cropped") return exportCroppedImages(targets, optIncludeSubImages)
     if (action === "pdf") return exportPDF(targets)
     if (action === "word") return exportWord(targets)
   }
@@ -342,7 +342,8 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
           q.content.split("\n").forEach((line) =>
             children.push(new Paragraph({ text: line || " " }))
           )
-          // 题目截图
+          // 题目截图（可选）
+          if (optIncludeImage) {
           try {
             const dataUrl = await cropToDataUrl(img, q.bbox, 800, true)
             const base64 = dataUrl.split(",")[1]
@@ -360,7 +361,9 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
           } catch (e) {
             console.error(e)
           }
-          // 配图
+          }
+          // 配图（可选）
+          if (optIncludeSubImages) {
           for (const si of q.images) {
             try {
               const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600, true))
@@ -388,8 +391,9 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
               console.error(e)
             }
           }
-          // 批改
-          if (q.grading) {
+          }
+          // 批改（可选）
+          if (optIncludeGrading && q.grading) {
             const statusText =
               q.grading.correct === true ? "✓ 正确" :
               q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"
@@ -441,19 +445,21 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
 
       for (let i = 0; i < targets.length; i++) {
         const img = targets[i]
-        // 1. 第一页：原图 + 框 + 题号标签
-        const { renderImageWithBoxes } = await import("@/lib/merge-images")
-        const boxDataUrl = await renderImageWithBoxes(img, {
-          showLabels: true,
-          showGradingColor: true,
-        })
-        const boxImg = await loadImageLocal(boxDataUrl)
-        const drawW = pageW - margin * 2
-        const drawH = (boxImg.naturalHeight / boxImg.naturalWidth) * drawW
-        const finalDrawH = Math.min(drawH, pageH - margin * 2)
-        const finalDrawW = (finalDrawH / drawH) * drawW
-        if (i > 0) pdf.addPage()
-        pdf.addImage(boxDataUrl, "JPEG", margin, margin, finalDrawW, finalDrawH)
+        // 1. 第一页（可选）：原图 + 框 + 题号标签
+        if (optIncludeImage) {
+          const { renderImageWithBoxes } = await import("@/lib/merge-images")
+          const boxDataUrl = await renderImageWithBoxes(img, {
+            showLabels: true,
+            showGradingColor: optIncludeGrading,
+          })
+          const boxImg = await loadImageLocal(boxDataUrl)
+          const drawW = pageW - margin * 2
+          const drawH = (boxImg.naturalHeight / boxImg.naturalWidth) * drawW
+          const finalDrawH = Math.min(drawH, pageH - margin * 2)
+          const finalDrawW = (finalDrawH / drawH) * drawW
+          if (i > 0) pdf.addPage()
+          pdf.addImage(boxDataUrl, "JPEG", margin, margin, finalDrawW, finalDrawH)
+        }
 
         // 2. 后续页：每道题渲染为图片（含文字 + 截图 + 配图 + 批改）
         const questions = img.questions.filter((q) => q.kind !== "passage")
@@ -467,9 +473,9 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
           }
           try {
             const { dataUrl: qDataUrl } = await renderQuestionToCanvas(img, q, passageContent, {
-              showGrading: true,
-              showSubImages: true,
-              showQuestionImage: true,
+              showGrading: optIncludeGrading,
+              showSubImages: optIncludeSubImages,
+              showQuestionImage: optIncludeImage,
             })
             if (qDataUrl) {
               const qImg = await loadImageLocal(qDataUrl)
@@ -647,19 +653,37 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
 
       {/* 选择图片对话框 */}
       <Dialog open={selectImagesOpen} onOpenChange={setSelectImagesOpen}>
-        <DialogContent className="max-w-md max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>选择要导出的图片</DialogTitle>
+            <DialogTitle>导出设置</DialogTitle>
             <DialogDescription>
-              已选 {selectedImageIds.size} / {images.length} 张
+              选择要导出的图片（已选 {selectedImageIds.size} / {images.length} 张）和导出内容
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
+          <div className="space-y-3">
+            {/* 导出选项 */}
+            <div className="rounded-md border p-3 space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">导出内容（PDF / Word / 题目截图）</div>
+              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeImage(!optIncludeImage)}>
+                <Checkbox checked={optIncludeImage} onCheckedChange={(v) => setOptIncludeImage(!!v)} />
+                <span className="text-sm">包含题目原图截图</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeSubImages(!optIncludeSubImages)}>
+                <Checkbox checked={optIncludeSubImages} onCheckedChange={(v) => setOptIncludeSubImages(!!v)} />
+                <span className="text-sm">包含题目内配图</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeGrading(!optIncludeGrading)}>
+                <Checkbox checked={optIncludeGrading} onCheckedChange={(v) => setOptIncludeGrading(!!v)} />
+                <span className="text-sm">包含批改结果和解析</span>
+              </label>
+            </div>
+            {/* 选择图片 */}
             <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground font-medium">选择图片：</span>
               <button onClick={selectAll} className="px-2 py-1 rounded hover:bg-accent">全选</button>
               <button onClick={selectNone} className="px-2 py-1 rounded hover:bg-accent">取消全选</button>
             </div>
-            <div className="space-y-1 max-h-60 overflow-y-auto">
+            <div className="space-y-1 max-h-52 overflow-y-auto">
               {images.map((im, i) => {
                 const checked = selectedImageIds.has(im.id)
                 return (

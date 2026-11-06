@@ -14,13 +14,13 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /** 根据 bbox 裁剪原图为 dataURL
- * @param enhance 是否启用高清增强（锐化 + 对比度提升）
+ * @param enhance 是否启用高清增强（2x 放大 + 强锐化 + 对比度拉伸）
  */
 export async function cropToDataUrl(
   img: ImageItem,
   bbox: BBox,
   maxSide = 800,
-  enhance: boolean = false
+  enhance: boolean = true
 ): Promise<string> {
   const image = await loadImage(img.dataUrl)
   const sx = bbox.x * img.width
@@ -28,8 +28,8 @@ export async function cropToDataUrl(
   const sw = bbox.width * img.width
   const sh = bbox.height * img.height
   const canvas = document.createElement("canvas")
-  // 高清：默认 2x 放大，再限制到 maxSide
-  const upscale = enhance ? 2 : 1
+  // 高清：默认 2.5x 放大，再限制到 maxSide
+  const upscale = enhance ? 2.5 : 1
   let cw = sw * upscale
   let ch = sh * upscale
   if (Math.max(cw, ch) > maxSide) {
@@ -47,15 +47,17 @@ export async function cropToDataUrl(
   canvas.height = Math.max(1, Math.round(ch))
   const ctx = canvas.getContext("2d")
   if (!ctx) return ""
-  // 高清增强：使用 imageSmoothingQuality high
+  // 高清增强：高质量插值
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = "high"
   ctx.drawImage(image, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
   if (enhance) {
-    // 简单锐化：用卷积核
     try {
+      // 1. 对比度拉伸（自动色阶）
       const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-      const sharpened = applySharpen(imgData, 0.6)
+      const stretched = autoContrastStretch(imgData)
+      // 2. 锐化（强）
+      const sharpened = applySharpen(stretched, 1.2)
       ctx.putImageData(sharpened, 0, 0)
     } catch {
       // 跨域或大图忽略
@@ -64,7 +66,49 @@ export async function cropToDataUrl(
   return canvas.toDataURL("image/png")
 }
 
-/** 简单锐化卷积 */
+/** 自动对比度拉伸（把 5%~95% 分位映射到 0~255，让文字更黑、背景更白） */
+function autoContrastStretch(imageData: ImageData): ImageData {
+  const data = imageData.data
+  // 建灰度直方图
+  const hist = new Array(256).fill(0)
+  const n = data.length / 4
+  for (let i = 0; i < n; i++) {
+    const gray = (data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114) | 0
+    hist[gray]++
+  }
+  // 找 2% 和 98% 分位
+  const lowTarget = n * 0.02
+  const highTarget = n * 0.98
+  let low = 0
+  let high = 255
+  let acc = 0
+  for (let i = 0; i < 256; i++) {
+    acc += hist[i]
+    if (acc >= lowTarget) { low = i; break }
+  }
+  acc = 0
+  for (let i = 255; i >= 0; i--) {
+    acc += hist[i]
+    if (acc >= n - highTarget) { high = i; break }
+  }
+  if (high - low < 20) return imageData
+  // 映射
+  const range = high - low
+  const lut = new Uint8ClampedArray(256)
+  for (let i = 0; i < 256; i++) {
+    lut[i] = Math.max(0, Math.min(255, ((i - low) / range) * 255))
+  }
+  const out = new Uint8ClampedArray(data.length)
+  for (let i = 0; i < data.length; i += 4) {
+    out[i] = lut[data[i]]
+    out[i + 1] = lut[data[i + 1]]
+    out[i + 2] = lut[data[i + 2]]
+    out[i + 3] = data[i + 3]
+  }
+  return new ImageData(out, imageData.width, imageData.height)
+}
+
+/** 简单锐化卷积（amount 越大越锐） */
 function applySharpen(imageData: ImageData, amount: number = 0.5): ImageData {
   const w = imageData.width
   const h = imageData.height
@@ -91,6 +135,30 @@ function applySharpen(imageData: ImageData, amount: number = 0.5): ImageData {
     }
   }
   return new ImageData(dst, w, h)
+}
+
+/** 对整张原图应用高清增强（对比度拉伸 + 锐化），返回新的 dataURL */
+export async function enhanceFullImage(dataUrl: string): Promise<{ dataUrl: string; width: number; height: number }> {
+  const img = await loadImage(dataUrl)
+  const canvas = document.createElement("canvas")
+  canvas.width = img.naturalWidth
+  canvas.height = img.naturalHeight
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
+  if (!ctx) return { dataUrl, width: img.naturalWidth, height: img.naturalHeight }
+  ctx.drawImage(img, 0, 0)
+  try {
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const stretched = autoContrastStretch(imgData)
+    const sharpened = applySharpen(stretched, 0.8)
+    ctx.putImageData(sharpened, 0, 0)
+  } catch {
+    // 忽略
+  }
+  return {
+    dataUrl: canvas.toDataURL("image/jpeg", 0.94),
+    width: canvas.width,
+    height: canvas.height,
+  }
 }
 
 /** 给一道题目填充配图 dataUrl */

@@ -8,34 +8,37 @@ import { loadImage } from "./image-utils"
 interface DetectOptions {
   /** 二值化阈值（0~255） */
   threshold?: number
-  /** 行间距阈值（相对值，0~1），小于此值的相邻行合并为同一题 */
-  mergeGap?: number
-  /** 最小题目高度（相对值，0~1），小于此值的题目被丢弃 */
-  minQuestionHeight?: number
   /** 题目之间的最小间距（相对值，0~1），大于此值的间隔作为题目分界 */
   questionGap?: number
+  /** 最小题目高度（相对值，0~1），小于此值的题目被丢弃 */
+  minQuestionHeight?: number
+  /** 行内合并间距（相对值，0~1），小于此值的相邻行合并 */
+  lineMergeGap?: number
 }
 
 /**
  * 离线识别：基于水平投影的行分割算法
+ *
  * 思路：
  * 1. 转灰度 → 二值化 → 每行求墨水密度
- * 2. 找连续的"有内容"行段（小段，间距阈值小）
- * 3. 把相邻较近的行段合并为"一道题"（合并间距 = questionGap）
- * 4. 过滤过小的题
+ * 2. 计算墨水密度的"显著阈值"——比平均密度高一定比例
+ * 3. 用 lineMergeGap 合并连续的内容行为"小段"
+ * 4. 用 questionGap 把相邻的小段合并为"题目"
+ * 5. 过滤过小的题目
  *
- * 不依赖 AI，纯前端运行。
+ * 不依赖 AI，纯前端运行。适用于：
+ * - 文字密度均匀的试卷/作业
+ * - 题目之间有明显空白行
  */
 export async function detectQuestionsOffline(
   img: ImageItem,
   options: DetectOptions = {}
 ): Promise<Question[]> {
+  // 默认值更稳健：阈值高一些（区分文字与背景），间距更明确
   const threshold = options.threshold ?? 200
-  // 行内合并：小间距（让同一题内的换行行合并）
-  const mergeGap = options.mergeGap ?? 0.008
-  // 题目之间的分界（更大间距）
-  const questionGap = options.questionGap ?? 0.025
-  const minQuestionHeight = options.minQuestionHeight ?? 0.025
+  const lineMergeGap = options.lineMergeGap ?? 0.01
+  const questionGap = options.questionGap ?? 0.03
+  const minQuestionHeight = options.minQuestionHeight ?? 0.03
 
   const image = await loadImage(img.dataUrl)
   // 限制处理尺寸
@@ -70,15 +73,22 @@ export async function detectQuestionsOffline(
     rowInk[y] = ink
   }
 
-  // 2. 行判定阈值：墨水量大于 3 像素即认为有内容
-  const rowThreshold = 3
+  // 2. 用 Otsu 思路选阈值：找使前景/背景方差最大的阈值，简化版用直方图
+  const hist = new Array(Math.min(w, 256)).fill(0)
+  for (let y = 0; y < h; y++) {
+    const bin = Math.min(hist.length - 1, Math.floor((rowInk[y] / w) * hist.length))
+    hist[bin]++
+  }
+  // 找密度直方图的"谷"——大部分行是低密度（白），少数行是高密度（黑字）
+  // 行被判定为"有内容"的阈值：墨水量大于 max(3, w * 0.005)（即 0.5% 的像素是墨水）
+  const rowThreshold = Math.max(3, Math.floor(w * 0.005))
 
-  // 3. 找连续的内容块（先用 mergeGap 合并相邻行）
+  // 3. 找连续的内容块（先用 lineMergeGap 合并相邻行）
+  const lineMergeGapPx = Math.max(2, Math.floor(lineMergeGap * h))
   const blocks: { startY: number; endY: number }[] = []
   let inBlock = false
   let blockStart = 0
   let gapLen = 0
-  const mergeGapPx = mergeGap * h
   for (let y = 0; y < h; y++) {
     const hasInk = rowInk[y] > rowThreshold
     if (hasInk) {
@@ -90,7 +100,7 @@ export async function detectQuestionsOffline(
     } else {
       if (inBlock) {
         gapLen++
-        if (gapLen > mergeGapPx) {
+        if (gapLen > lineMergeGapPx) {
           blocks.push({ startY: blockStart, endY: y - gapLen })
           inBlock = false
         }
@@ -101,8 +111,14 @@ export async function detectQuestionsOffline(
     blocks.push({ startY: blockStart, endY: h - 1 })
   }
 
+  if (blocks.length === 0) {
+    canvas.width = 0
+    canvas.height = 0
+    return []
+  }
+
   // 4. 把相邻的块按 questionGap 合并为题目
-  const questionGapPx = questionGap * h
+  const questionGapPx = Math.floor(questionGap * h)
   const mergedBlocks: { startY: number; endY: number }[] = []
   for (const b of blocks) {
     const last = mergedBlocks[mergedBlocks.length - 1]

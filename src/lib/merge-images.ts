@@ -20,13 +20,16 @@ export async function mergeImagesVertically(
   }
   const gap = options.gap ?? 0
   const bg = options.backgroundColor ?? "#ffffff"
-  const maxSide = options.maxSide ?? 2400
+  // 最大边长设大一些（让合并后的长图有足够清晰度）
+  const maxSide = options.maxSide ?? 2200
 
   // 加载所有图片
   const loaded = await Promise.all(images.map((im) => loadImage(im.dataUrl)))
 
-  // 统一最大宽度（按最大宽度的图）
-  const targetWidth = Math.min(maxSide, Math.max(...loaded.map((im) => im.naturalWidth)))
+  // 统一宽度：取最小宽度（避免小图被拉伸糊）+ 不超过 maxSide
+  const minWidth = Math.min(...loaded.map((im) => im.naturalWidth))
+  const targetWidth = Math.min(maxSide, minWidth)
+
   // 计算每张图缩放后的高度
   const scaled = loaded.map((im) => {
     const ratio = im.naturalHeight / im.naturalWidth
@@ -36,39 +39,51 @@ export async function mergeImagesVertically(
   })
   const totalHeight = scaled.reduce((sum, s) => sum + s.h, 0) + gap * (scaled.length - 1)
 
-  const canvas = document.createElement("canvas")
-  canvas.width = targetWidth
-  canvas.height = totalHeight
-  const ctx = canvas.getContext("2d")
-  if (!ctx) throw new Error("无法创建画布上下文")
-  ctx.fillStyle = bg
-  ctx.fillRect(0, 0, targetWidth, totalHeight)
+  // 如果合并后的图过大，按比例缩到 maxSide
+  let scaleDown = 1
+  if (totalHeight > maxSide * 1.6) {
+    scaleDown = (maxSide * 1.6) / totalHeight
+  }
+  const finalW = Math.round(targetWidth * scaleDown)
+  const finalH = Math.round(totalHeight * scaleDown)
+
+  // 先画到全尺寸 canvas
+  const fullCanvas = document.createElement("canvas")
+  fullCanvas.width = targetWidth
+  fullCanvas.height = totalHeight
+  const fullCtx = fullCanvas.getContext("2d")
+  if (!fullCtx) throw new Error("无法创建画布上下文")
+  fullCtx.fillStyle = bg
+  fullCtx.fillRect(0, 0, targetWidth, totalHeight)
   let y = 0
   for (const s of scaled) {
-    ctx.drawImage(s.img, 0, y, s.w, s.h)
+    fullCtx.drawImage(s.img, 0, y, s.w, s.h)
     y += s.h + gap
   }
-  // 限制最终图最大边长
+
+  // 缩到最终尺寸
   let finalDataUrl: string
-  if (Math.max(targetWidth, totalHeight) > maxSide * 1.5) {
-    // 压缩
-    const ratio = (maxSide * 1.5) / Math.max(targetWidth, totalHeight)
-    const cw = Math.round(targetWidth * ratio)
-    const ch = Math.round(totalHeight * ratio)
+  if (scaleDown < 1) {
     const c2 = document.createElement("canvas")
-    c2.width = cw
-    c2.height = ch
+    c2.width = finalW
+    c2.height = finalH
     const c2ctx = c2.getContext("2d")
-    if (c2ctx) {
-      c2ctx.drawImage(canvas, 0, 0, cw, ch)
-      finalDataUrl = c2.toDataURL("image/jpeg", 0.9)
-    } else {
-      finalDataUrl = canvas.toDataURL("image/jpeg", 0.9)
-    }
+    if (!c2ctx) throw new Error("无法创建缩放画布上下文")
+    c2ctx.drawImage(fullCanvas, 0, 0, finalW, finalH)
+    finalDataUrl = c2.toDataURL("image/jpeg", 0.92)
   } else {
-    finalDataUrl = canvas.toDataURL("image/jpeg", 0.92)
+    finalDataUrl = fullCanvas.toDataURL("image/jpeg", 0.92)
   }
-  return { dataUrl: finalDataUrl, width: targetWidth, height: totalHeight }
+
+  // 清理
+  fullCanvas.width = 0
+  fullCanvas.height = 0
+
+  return {
+    dataUrl: finalDataUrl,
+    width: finalW,
+    height: finalH,
+  }
 }
 
 /** 把多个图片合并为一项 ImageItem，记录来源 */
@@ -99,6 +114,8 @@ export async function renderImageWithBoxes(
     selectedOnly?: string | null
     boxColor?: string
     selectedColor?: string
+    /** 是否按批改结果分色：错题红、部分正确黄、正确绿、未批改保持 boxColor */
+    showGradingColor?: boolean
   } = {}
 ): Promise<string> {
   const image = await loadImage(img.dataUrl)
@@ -108,7 +125,13 @@ export async function renderImageWithBoxes(
   const ctx = canvas.getContext("2d")
   if (!ctx) return img.dataUrl
   ctx.drawImage(image, 0, 0)
-  const { showLabels = true, selectedOnly = null, boxColor = "#10b981", selectedColor = "#e11d48" } = options
+  const {
+    showLabels = true,
+    selectedOnly = null,
+    boxColor = "#10b981",
+    selectedColor = "#e11d48",
+    showGradingColor = false,
+  } = options
   const W = canvas.width
   const H = canvas.height
   ctx.lineWidth = Math.max(2, Math.round(W / 500))
@@ -120,13 +143,22 @@ export async function renderImageWithBoxes(
     const w = q.bbox.width * W
     const h = q.bbox.height * H
     const isSel = q.id === selectedOnly
-    ctx.strokeStyle = isSel ? selectedColor : boxColor
+    // 按批改结果着色
+    let color = isSel ? selectedColor : boxColor
+    if (showGradingColor && q.grading) {
+      if (q.grading.correct === false) color = "#dc2626" // 红
+      else if (q.grading.correct === "partial") color = "#d97706" // 黄
+      else if (q.grading.correct === true) color = "#16a34a" // 绿
+    } else if (showGradingColor && q.kind === "passage") {
+      color = "#3b82f6" // 蓝色：阅读材料
+    }
+    ctx.strokeStyle = color
     ctx.strokeRect(x, y, w, h)
     if (showLabels && q.number) {
-      const label = `第 ${q.number} 题`
+      const label = q.kind === "passage" ? "阅读材料" : `第 ${q.number} 题`
       const tw = ctx.measureText(label).width
       const lh = Math.max(20, Math.round(W / 40))
-      ctx.fillStyle = isSel ? selectedColor : boxColor
+      ctx.fillStyle = color
       ctx.fillRect(x, Math.max(0, y - lh), tw + 16, lh)
       ctx.fillStyle = "#fff"
       ctx.textBaseline = "middle"

@@ -427,24 +427,47 @@ export function QuestionCanvas() {
                 const top = q.bbox.y * imgSize.h
                 const w = q.bbox.width * imgSize.w
                 const h = q.bbox.height * imgSize.h
-                // 阅读理解文章用蓝色，阅读理解题目用紫色，普通用绿色
-                const colorCls = q.kind === "passage"
-                  ? "border-blue-500 bg-blue-500/10"
-                  : q.kind === "passage_question"
-                  ? "border-purple-500 bg-purple-500/10"
-                  : "border-emerald-500 bg-emerald-500/10 hover:border-emerald-600"
-                const selColor = q.kind === "passage"
-                  ? "border-blue-600 bg-blue-500/20"
-                  : q.kind === "passage_question"
-                  ? "border-purple-600 bg-purple-500/20"
-                  : "border-rose-500 bg-rose-500/10"
-                const labelBg = q.kind === "passage"
-                  ? "bg-blue-500"
-                  : q.kind === "passage_question"
-                  ? "bg-purple-500"
-                  : isSel
-                  ? "bg-rose-500"
-                  : "bg-emerald-500"
+                // 颜色优先级：选中 > 批改结果 > 题目类型
+                // 批改错题红色、部分正确橙色、正确绿色；未批改时按类型：阅读材料蓝、阅读题紫、普通绿
+                const gradingCorrect = q.grading?.correct
+                const baseColorCls =
+                  gradingCorrect === false
+                    ? "border-red-600 bg-red-500/15"
+                    : gradingCorrect === "partial"
+                    ? "border-amber-500 bg-amber-500/15"
+                    : gradingCorrect === true
+                    ? "border-emerald-600 bg-emerald-500/15"
+                    : q.kind === "passage"
+                    ? "border-blue-500 bg-blue-500/10"
+                    : q.kind === "passage_question"
+                    ? "border-purple-500 bg-purple-500/10"
+                    : "border-emerald-500 bg-emerald-500/10 hover:border-emerald-600"
+                const selColor =
+                  gradingCorrect === false
+                    ? "border-red-700 bg-red-500/25"
+                    : gradingCorrect === "partial"
+                    ? "border-amber-600 bg-amber-500/25"
+                    : gradingCorrect === true
+                    ? "border-emerald-700 bg-emerald-500/25"
+                    : q.kind === "passage"
+                    ? "border-blue-600 bg-blue-500/20"
+                    : q.kind === "passage_question"
+                    ? "border-purple-600 bg-purple-500/20"
+                    : "border-rose-500 bg-rose-500/10"
+                const labelBg =
+                  gradingCorrect === false
+                    ? "bg-red-600"
+                    : gradingCorrect === "partial"
+                    ? "bg-amber-500"
+                    : gradingCorrect === true
+                    ? "bg-emerald-600"
+                    : q.kind === "passage"
+                    ? "bg-blue-500"
+                    : q.kind === "passage_question"
+                    ? "bg-purple-500"
+                    : isSel
+                    ? "bg-rose-500"
+                    : "bg-emerald-500"
                 return (
                   <div
                     key={q.id}
@@ -455,7 +478,7 @@ export function QuestionCanvas() {
                     }}
                     className={cn(
                       "absolute cursor-move border-2 transition-colors",
-                      isSel ? selColor : colorCls,
+                      isSel ? selColor : baseColorCls,
                       isSel && "z-10"
                     )}
                     style={{ left, top, width: w, height: h }}

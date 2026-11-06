@@ -194,6 +194,7 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
   }, [addImage, shotCount, mode, setCurrentImage, crossPageCount])
 
   // 跨页模式：完成拍摄，合并图片并触发识别
+  // 注意：完成后保持 crosspage 模式不变（用户可能要继续拍下一组跨页题）
   const finishCrossPage = useCallback(async () => {
     const ids = crossPagePendingRef.current
     if (ids.length === 0) {
@@ -208,18 +209,17 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       if (imgs.length === 0) {
         crossPagePendingRef.current = []
         setCrossPageCount(0)
-        setMode("single")
         return
       }
-      // 单页直接重置
+      // 单页直接重置（不需要合并）
       if (imgs.length === 1) {
         const id = imgs[0].id
         const setDetected = useDetectorStore.getState().setDetected
         setDetected(id, false)
         crossPagePendingRef.current = []
         setCrossPageCount(0)
-        setMode("single")
         setCurrentImage(id)
+        toast.success("单页已保留")
         return
       }
       const { dataUrl, width, height } = await mergeImagesVertically(imgs)
@@ -235,10 +235,9 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       ids.forEach((id) => removeImage(id))
       crossPagePendingRef.current = []
       setCrossPageCount(0)
-      setMode("single")
       setCurrentImage(mergedId)
       toast.success(`已合并 ${imgs.length} 页为一张图，正在识别…`)
-      // 主动触发识别（合并图不会被 useAutoDetect 自动处理，因为 knownIdsRef 已经包含它）
+      // 主动触发识别
       const setDetecting = useDetectorStore.getState().setDetecting
       const setQuestions = useDetectorStore.getState().setQuestions
       const autoDetectOn = useDetectorStore.getState().autoDetect
@@ -246,7 +245,6 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       if (autoDetectOn) {
         setDetecting(mergedId, true)
         try {
-          // 异步加载
           const { detectQuestions } = await import("@/lib/detect-service")
           const fresh = useDetectorStore.getState().images.find((x) => x.id === mergedId)
           if (fresh) {

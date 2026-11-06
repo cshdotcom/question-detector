@@ -26,6 +26,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { cropToDataUrl, dataUrlToBlob, downloadBlob, fillQuestionImages } from "@/lib/image-utils"
 import { gradeQuestion } from "@/lib/detect-service"
@@ -124,31 +130,89 @@ export function QuestionList() {
     }
   }, [currentImage])
 
-  // 批量下载勾选的题目
-  const downloadChecked = useCallback(async () => {
+  // 批量下载勾选的题目（含可选配图）
+  const downloadChecked = useCallback(async (includeSubImages: boolean = false) => {
     if (!currentImage) return
     if (checkedQids.size === 0) {
       toast.error("请先勾选要下载的题目")
       return
     }
-    toast.info(`开始下载 ${checkedQids.size} 张题目截图`)
+    toast.info(`开始下载 ${checkedQids.size} 道题目截图`)
     let count = 0
     for (const qid of Array.from(checkedQids)) {
       const q = currentImage.questions.find((x) => x.id === qid)
       if (!q) continue
       try {
         const dataUrl = await cropToDataUrl(currentImage, q.bbox, 1600)
-        const blob = dataUrlToBlob(dataUrl)
+        // 加题号水印 + 批改结果颜色
+        const { addLabelWatermarkLocal } = await import("./QuestionList.watermark")
+        const withLabel = await addLabelWatermarkLocal(dataUrl, q.number, q.grading?.correct)
+        const blob = dataUrlToBlob(withLabel)
         const name = `第${q.number || "?"}题_${currentImage.name.replace(/\.[^.]+$/, "")}.png`
         downloadBlob(blob, name)
         count += 1
+        if (includeSubImages) {
+          for (let k = 0; k < q.images.length; k++) {
+            const si = q.images[k]
+            const subDataUrl = si.dataUrl ?? (await cropToDataUrl(currentImage, si.bbox, 800))
+            if (subDataUrl) {
+              const subBlob = dataUrlToBlob(subDataUrl)
+              downloadBlob(subBlob, `第${q.number || "?"}题_配图${k + 1}.png`)
+              count += 1
+            }
+          }
+        }
         await new Promise((r) => setTimeout(r, 200))
       } catch {
         // 忽略单张失败
       }
     }
-    toast.success(`已下载 ${count} 张题目截图`)
+    toast.success(`已下载 ${count} 张图片`)
   }, [currentImage, checkedQids])
+
+  // 批量批改勾选的题目
+  const gradeChecked = useCallback(async () => {
+    if (!currentImage) return
+    if (checkedQids.size === 0) {
+      toast.error("请先勾选要批改的题目")
+      return
+    }
+    toast.info(`开始批改 ${checkedQids.size} 道题目`)
+    let ok = 0
+    let fail = 0
+    for (const qid of Array.from(checkedQids)) {
+      const q = currentImage.questions.find((x) => x.id === qid)
+      if (!q) continue
+      if (q.kind === "passage") continue
+      setGradingQid(q.id)
+      try {
+        let passageContent: string | undefined
+        if (q.kind === "passage_question" && q.passageId) {
+          const passage = currentImage.questions.find((x) => x.id === q.passageId)
+          if (passage) passageContent = passage.content
+        }
+        const grading = await gradeQuestion(currentImage, q, passageContent, aiConfig)
+        setGrading(currentImage.id, q.id, grading)
+        ok += 1
+      } catch (e) {
+        fail += 1
+        console.error(`批改失败 ${q.number}:`, e)
+      } finally {
+        setGradingQid(null)
+      }
+    }
+    toast.success(`批量批改完成：成功 ${ok} 道${fail > 0 ? `，失败 ${fail} 道` : ""}`)
+  }, [currentImage, checkedQids, aiConfig, setGrading])
+
+  // 全选 / 全不选
+  const selectAll = useCallback(() => {
+    if (!currentImage) return
+    setCheckedQids(new Set(currentImage.questions.filter((q) => q.kind !== "passage").map((q) => q.id)))
+  }, [currentImage])
+
+  const selectNone = useCallback(() => {
+    setCheckedQids(new Set())
+  }, [])
 
   // 复制题目文字
   const copyQuestionText = useCallback(async (q: Question) => {
@@ -182,33 +246,81 @@ export function QuestionList() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <div className="flex items-center gap-1.5 text-sm font-medium">
-          <ListChecks className="size-4" />
-          题目列表
-          <span className="text-xs text-muted-foreground">({questions.length})</span>
-        </div>
-        <div className="flex items-center gap-1">
-          {checkedQids.size > 0 && (
-            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={downloadChecked}>
-              <Download className="size-3 mr-1" /> 下载({checkedQids.size})
+      <div className="px-3 py-2 border-b space-y-1.5">
+        <div className="flex items-center justify-between gap-1">
+          <div className="flex items-center gap-1.5 text-sm font-medium shrink-0">
+            <ListChecks className="size-4" />
+            题目
+            <span className="text-xs text-muted-foreground">({questions.length})</span>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() =>
+                addQuestion(currentImage.id, {
+                  number: String(questions.length + 1),
+                  content: "",
+                  bbox: { x: 0.1, y: 0.4, width: 0.8, height: 0.15 },
+                })
+              }
+            >
+              <Plus className="size-3.5 mr-1" /> 添加
             </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7"
-            onClick={() =>
-              addQuestion(currentImage.id, {
-                number: String(questions.length + 1),
-                content: "",
-                bbox: { x: 0.1, y: 0.4, width: 0.8, height: 0.15 },
-              })
-            }
-          >
-            <Plus className="size-3.5 mr-1" /> 添加
-          </Button>
+          </div>
         </div>
+        {/* 多选操作工具栏 */}
+        {questions.some((q) => q.kind !== "passage") && (
+          <div className="flex items-center gap-1 text-xs">
+            <button
+              onClick={selectAll}
+              className="px-1.5 py-0.5 rounded hover:bg-accent"
+            >
+              全选
+            </button>
+            <span className="text-muted-foreground">|</span>
+            <button
+              onClick={selectNone}
+              className="px-1.5 py-0.5 rounded hover:bg-accent"
+            >
+              取消
+            </button>
+            <span className="text-muted-foreground ml-1">已选 {checkedQids.size}</span>
+            <div className="ml-auto flex items-center gap-1">
+              {checkedQids.size > 0 && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-xs px-2"
+                    onClick={gradeChecked}
+                    disabled={!!gradingQid}
+                    title="批量批改勾选的题目"
+                  >
+                    {gradingQid ? <Loader2 className="size-3 mr-1 animate-spin" /> : <Wand2 className="size-3 mr-1" />}
+                    批改
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" className="h-6 text-xs px-2">
+                        <Download className="size-3 mr-1" /> 下载
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={() => downloadChecked(false)}>
+                        仅题目截图
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => downloadChecked(true)}>
+                        题目截图 + 配图
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <ScrollArea className="flex-1 min-h-0">

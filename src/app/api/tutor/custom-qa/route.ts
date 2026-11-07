@@ -10,6 +10,7 @@ interface CustomQABody {
   image?: string
   config?: AIProviderConfig
   history?: { role: "user" | "assistant"; content: string; image?: string }[]
+  context?: string  // 额外上下文（如背诵内容）
 }
 
 const SYS_PROMPT = `你是一名全科辅导老师。用户可以上传任何图片（题目、课本、作业、实物等）并提出任何问题。
@@ -18,15 +19,17 @@ const SYS_PROMPT = `你是一名全科辅导老师。用户可以上传任何图
 2. 回答用户的问题
 3. 如果是题目，给出详细解析
 4. 如果是概念，给出通俗易懂的解释
-5. 主动提出延伸问题，引导学生深入思考
+5. 如果有上下文（如背诵内容），基于上下文回答
 
 回答要求：
 - 使用中文
-- 语言通俗易懂
+- 语言通俗易懂，直接回答问题，不要寒暄
 - 关键点用 <b>...</b> 加粗
-- 公式用 unicode（如 x² √ ∫ ∑）
+- 公式用 unicode（如 x² √ ∫ ∑ × ÷ ≤ ≥ ≠）
+- 绝对不要输出 LaTeX（如 \\frac \\sqrt \\times 等）
 - 适当使用 <br> 换行
-- 不要使用 markdown 代码块`
+- 不要使用 markdown 代码块
+- 不要问用户几年级、什么科目等无关问题`
 
 /** POST /api/tutor/custom-qa — 自定义问答（不创建 session，直接调 AI） */
 export async function POST(req: Request) {
@@ -36,8 +39,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少 message 或 image" }, { status: 400 })
     }
 
+    const sysContent = body.context
+      ? `${SYS_PROMPT}\n\n${body.context}`
+      : SYS_PROMPT
+
     const messages: ChatMessage[] = [
-      { role: "system", content: SYS_PROMPT },
+      { role: "system", content: sysContent },
     ]
 
     // 加入历史

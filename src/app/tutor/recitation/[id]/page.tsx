@@ -206,18 +206,20 @@ export default function RecitationPage() {
     }
   }
 
-  // AI 问问
+  // AI 问问：基于当前背诵内容的对话
   const sendAsk = async () => {
     const text = askInput.trim()
     if (!text && !askImage) return
     const userMsg = { role: "user" as const, content: text || "（上传了图片）", image: askImage || undefined }
-    setAskMessages((prev) => [...prev, userMsg])
+    const newMessages = [...askMessages, userMsg]
+    setAskMessages(newMessages)
     setAskInput("")
     setAskImage("")
     setAsking(true)
     try {
       let config
       try { const raw = localStorage.getItem("ai-config"); if (raw) config = JSON.parse(raw) } catch {}
+      // 调 custom-qa，带背诵内容作为 system context
       const resp = await authFetch("/api/tutor/custom-qa", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -225,14 +227,29 @@ export default function RecitationPage() {
           message: text,
           image: askImage,
           config,
-          history: askMessages.slice(-10),
+          history: newMessages.slice(-10).map(m => ({ role: m.role, content: m.content, image: m.image })),
+          context: rec ? `当前正在背诵的内容：\n${rec.content}` : undefined,
         }),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok || !data.ok) throw new Error(data?.error || `HTTP ${resp.status}`)
       setAskMessages((prev) => [...prev, { role: "assistant", content: data.text }])
     } catch (e) {
-      toast.error(`AI 失败：${(e as Error).message}`)
+      const errMsg = (e as Error).message
+      toast.error(`AI 失败：${errMsg}`, {
+        duration: 10000,
+        action: {
+          label: "重试",
+          onClick: () => {
+            // 把用户消息移除，重新发送
+            setAskMessages((prev) => prev.slice(0, -1))
+            setTimeout(() => {
+              setAskInput(text)
+              setAskImage(askImage)
+            }, 100)
+          },
+        },
+      })
     } finally {
       setAsking(false)
     }

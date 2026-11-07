@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import {
-  Plus, ArrowLeft, Trash2, Loader2, BookOpen, Pencil,
+  Plus, ArrowLeft, Trash2, Loader2, BookOpen, Pencil, Camera,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -181,14 +181,65 @@ export default function MistakesListPage() {
               return (
                 <div key={b.id} className="group rounded-xl border bg-card overflow-hidden hover:shadow-md transition-shadow">
                   <button onClick={() => router.push(`/tutor/mistakes/${b.id}`)} className="block w-full text-left">
-                    <div className={`aspect-[3/2] ${meta.color} relative flex items-center justify-center`}>
-                      <BookOpen className="size-12 text-white/80" />
+                    <div className={`aspect-[3/2] ${meta.color} relative flex items-center justify-center overflow-hidden`}>
+                      {b.cover ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={b.cover} alt={b.title} className="w-full h-full object-cover" />
+                      ) : (
+                        <BookOpen className="size-12 text-white/80" />
+                      )}
                       <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] bg-black/40 text-white font-medium">
                         {meta.name}
                       </div>
                       <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded-md text-[10px] bg-black/40 text-white">
                         {b.count} 题
                       </div>
+                      {/* 自定义封面按钮 */}
+                      <label
+                        className="absolute top-2 left-2 size-7 rounded-md bg-black/40 hover:bg-black/60 text-white flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="自定义封面"
+                      >
+                        <Camera className="size-3.5" />
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0]
+                            if (!file) return
+                            const reader = new FileReader()
+                            reader.onload = async () => {
+                              const dataUrl = reader.result as string
+                              const img = new Image()
+                              img.onload = async () => {
+                                const MAX = 600
+                                const scale = Math.max(img.naturalWidth, img.naturalHeight) > MAX ? MAX / Math.max(img.naturalWidth, img.naturalHeight) : 1
+                                const canvas = document.createElement("canvas")
+                                canvas.width = Math.round(img.naturalWidth * scale)
+                                canvas.height = Math.round(img.naturalHeight * scale)
+                                const ctx = canvas.getContext("2d")
+                                if (!ctx) return
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+                                const coverData = canvas.toDataURL("image/jpeg", 0.8)
+                                try {
+                                  await authFetch(`/api/tutor/mistakes/${b.id}`, {
+                                    method: "PUT",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ cover: coverData }),
+                                  })
+                                  setBooks((prev) => prev.map((bk) => bk.id === b.id ? { ...bk, cover: coverData } : bk))
+                                  toast.success("封面已更新")
+                                } catch (err) {
+                                  toast.error("封面更新失败")
+                                }
+                              }
+                              img.src = dataUrl
+                            }
+                            reader.readAsDataURL(file)
+                            e.target.value = ""
+                          }}
+                        />
+                      </label>
                     </div>
                     <div className="p-3">
                       <div className="text-sm font-medium truncate">{b.title}</div>

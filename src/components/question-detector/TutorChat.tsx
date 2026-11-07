@@ -17,6 +17,7 @@ import {
   Archive,
   ChevronDown,
   Pen,
+  Bookmark,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -194,6 +195,44 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
       toast.success("已删除")
     } catch (e) {
       toast.error(`删除失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId])
+
+  // 收藏消息（仅 AI 消息）
+  const favoriteMessage = useCallback(async (msgIdx: number) => {
+    if (!session) return
+    const msg = session.messages[msgIdx]
+    if (!msg || msg.role !== "assistant") return
+    try {
+      // 提取纯文本
+      let content = msg.content
+      try {
+        if (content.trim().startsWith("{")) {
+          const obj = JSON.parse(content)
+          content = obj.content || obj.summary || content
+        }
+      } catch {}
+      const title = content.slice(0, 40).replace(/<[^>]+>/g, "")
+      const resp = await authFetch("/api/tutor/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "message",
+          refId: `${sessionId}_${msgIdx}_${msg.timestamp}`,
+          title,
+          summary: content.slice(0, 200).replace(/<[^>]+>/g, ""),
+          content: JSON.stringify({ message: msg, sessionId, sessionTitle: session.title }),
+          source: session.type === "solve" ? "解题模式" : "讲题模式",
+        }),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (resp.ok && data.ok) {
+        toast.success(data.alreadyExists ? "已收藏过" : "已收藏")
+      } else {
+        throw new Error(data?.error || `HTTP ${resp.status}`)
+      }
+    } catch (e) {
+      toast.error(`收藏失败：${(e as Error).message}`)
     }
   }, [session, sessionId])
 
@@ -505,7 +544,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           </div>
         )}
         {session.messages.map((m, i) => (
-          <MessageBubble key={i} message={m} isSolve={isSolve} onDelete={() => deleteMessage(i)} />
+          <MessageBubble key={i} message={m} isSolve={isSolve} onDelete={() => deleteMessage(i)} onFavorite={() => favoriteMessage(i)} />
         ))}
         {/* 流式响应 */}
         {streaming && streamContent && (
@@ -721,7 +760,7 @@ function StageIndicator({ stage }: { stage: number }) {
   )
 }
 
-function MessageBubble({ message, isSolve, onDelete }: { message: ChatMessage; isSolve: boolean; onDelete?: () => void }) {
+function MessageBubble({ message, isSolve, onDelete, onFavorite }: { message: ChatMessage; isSolve: boolean; onDelete?: () => void; onFavorite?: () => void }) {
   const isUser = message.role === "user"
   const accentColor = isSolve ? "violet" : "amber"
   const Icon = isUser ? null : (isSolve ? Brain : Lightbulb)
@@ -751,6 +790,16 @@ function MessageBubble({ message, isSolve, onDelete }: { message: ChatMessage; i
             {isUser ? "你" : "AI 老师"}
             {!isUser && message.stage && ` · 阶段 ${message.stage}`}
           </span>
+          {/* 收藏按钮（仅 AI 消息，hover 显示） */}
+          {!isUser && onFavorite && (
+            <button
+              onClick={onFavorite}
+              className="opacity-0 group-hover:opacity-100 transition-opacity size-5 rounded text-muted-foreground hover:text-emerald-500 hover:bg-emerald-500/10 flex items-center justify-center"
+              title="收藏这条消息"
+            >
+              <Bookmark className="size-3" />
+            </button>
+          )}
           {/* 删除消息按钮（hover 显示） */}
           {onDelete && (
             <button

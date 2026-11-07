@@ -21,19 +21,20 @@ interface EssayDetail {
   outline: string
   imageData: string
   status: string
+  favorited: boolean
   createdAt: number
   updatedAt: number
 }
 
 function rowToDetail(row: {
   id: string; type: string; title: string; prompt: string; wordCount: number; genre: string;
-  essay: string; outline: string; imageData: string; status: string;
+  essay: string; outline: string; imageData: string; status: string; favorited: boolean;
   createdAt: Date; updatedAt: Date;
 }): EssayDetail {
   return {
     id: row.id, type: row.type, title: row.title, prompt: row.prompt,
     wordCount: row.wordCount, genre: row.genre, essay: row.essay, outline: row.outline,
-    imageData: row.imageData, status: row.status,
+    imageData: row.imageData, status: row.status, favorited: row.favorited,
     createdAt: row.createdAt.getTime(), updatedAt: row.updatedAt.getTime(),
   }
 }
@@ -55,15 +56,101 @@ interface RewriteBody {
   prompt?: string  // 重写要求
   config?: AIProviderConfig
   regenerate?: boolean  // 完全重写（不带修改要求）
+  toggleFavorite?: boolean  // 收藏/取消收藏
+  generateOutline?: boolean  // 只生成思路
+  essay?: string  // 直接更新范文（编辑后保存）
+  outline?: string  // 直接更新思路
 }
 
-/** PUT /api/tutor/essays/[id] — 重写范文（带新要求 / 随机重写） */
+/** PUT /api/tutor/essays/[id] — 重写 / 收藏 / 生成思路 / 保存编辑 */
 export async function PUT(req: Request, ctx: RouteCtx) {
   try {
     const { id } = await ctx.params
     const body = (await req.json()) as RewriteBody
     const existing = await db.essaySession.findUnique({ where: { id } })
     if (!existing) return NextResponse.json({ ok: false, error: "作文不存在" }, { status: 404 })
+
+    // 收藏切换
+    if (body.toggleFavorite) {
+      const newFav = !existing.favorited
+      await db.essaySession.update({ where: { id }, data: { favorited: newFav } })
+      // 同步到收藏夹
+      if (newFav) {
+        // 添加收藏
+        const existingFav = await db.favorite.findFirst({ where: { type: "essay", refId: id } })
+        if (!existingFav) {
+          await db.favorite.create({
+            data: {
+              id: `fav_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              type: "essay", refId: id,
+              title: existing.title,
+              summary: existing.essay.slice(0, 100),
+              content: JSON.stringify({ essay: existing.essay, outline: existing.outline, type: existing.type }),
+              source: "AI 写作文",
+            },
+          })
+        }
+      } else {
+        // 取消收藏
+        await db.favorite.deleteMany({ where: { type: "essay", refId: id } })
+      }
+      return NextResponse.json({ ok: true, favorited: newFav })
+    }
+
+    // 直接保存编辑（essay/outline 字段）
+    if (body.essay !== undefined || body.outline !== undefined) {
+      const updateData: Record<string, unknown> = {}
+      if (body.essay !== undefined) updateData.essay = body.essay
+      if (body.outline !== undefined) updateData.outline = body.outline
+      await db.essaySession.update({ where: { id }, data: updateData })
+      return NextResponse.json({ ok: true })
+    }
+
+    // 只生成思路
+    if (body.generateOutline) {
+      const isChinese = existing.type === "chinese"
+      const sysPrompt = isChinese
+        ? `你是一名语文作文辅导老师。根据题目要求，生成详细的写作思路（不写范文）。
+输出格式（JSON）：
+{
+  "analysis": "审题分析（200 字内）",
+  "material": "选材建议（3-4 个素材）",
+  "structure": ["开头：写法建议", "正文：分 2-3 段要点", "结尾：升华方式"]
+}`
+        : `You are an English essay tutor. Generate detailed writing outline.
+Output JSON:
+{
+  "analysis": "topic analysis (within 100 words)",
+  "material": "3-4 material suggestions",
+  "structure": ["introduction: ...", "body: ...", "conclusion: ..."]
+}`
+      const messages: ChatMessage[] = [{ role: "system", content: sysPrompt }]
+      const userText = existing.prompt || existing.title
+      if (existing.imageData) {
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            { type: "image_url", image_url: { url: existing.imageData } },
+          ],
+        })
+      } else {
+        messages.push({ role: "user", content: userText })
+      }
+      const result = await callVisionChat(messages, { config: body.config, maxTokens: 4096 })
+      let outline = existing.outline
+      try {
+        const txt = result.content.trim().replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim()
+        const start = txt.indexOf("{"), end = txt.lastIndexOf("}")
+        if (start !== -1 && end !== -1) {
+          outline = JSON.stringify(JSON.parse(txt.slice(start, end + 1)))
+        }
+      } catch {
+        outline = JSON.stringify({ analysis: result.content })
+      }
+      await db.essaySession.update({ where: { id }, data: { outline } })
+      return NextResponse.json({ ok: true, outline })
+    }
 
     const isChinese = existing.type === "chinese"
     const sysPrompt = isChinese

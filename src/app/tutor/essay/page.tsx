@@ -3,7 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
-  ArrowLeft, Loader2, Pen, ImagePlus, X, Mic,
+  ArrowLeft, Loader2, Pen, ImagePlus, X, Mic, Lightbulb,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -54,7 +54,7 @@ export default function EssayNewPage() {
     e.target.value = ""
   }
 
-  const generate = async () => {
+  const generate = async (outlineOnly = false) => {
     if (!title.trim()) {
       toast.error("请填写题目")
       return
@@ -72,14 +72,16 @@ export default function EssayNewPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type, title: title.trim(), prompt: prompt.trim(),
-          wordCount, genre, imageData, config, generate: true,
+          wordCount, genre, imageData, config,
+          generate: !outlineOnly,
+          generateOutline: outlineOnly,
         }),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok || !data.ok) {
         throw new Error(data?.error || `HTTP ${resp.status}`)
       }
-      toast.success("范文生成完成")
+      toast.success(outlineOnly ? "写作思路已生成" : "范文生成完成")
       router.push(`/tutor/essay/${data.id}`)
     } catch (e) {
       toast.error(`生成失败：${(e as Error).message}`)
@@ -200,22 +202,26 @@ export default function EssayNewPage() {
           </div>
         </div>
 
-        {/* 生成按钮 */}
-        <Button
-          onClick={generate}
-          disabled={generating || !title.trim()}
-          className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-base"
-        >
-          {generating ? (
-            <>
-              <Loader2 className="size-5 mr-2 animate-spin" /> AI 正在创作中…
-            </>
-          ) : (
-            <>
-              <Pen className="size-5 mr-2" /> 生成范文
-            </>
-          )}
-        </Button>
+        {/* 生成按钮：写思路 + 写范文 */}
+        <div className="flex gap-2">
+          <Button
+            onClick={() => generate(true)}
+            disabled={generating || !title.trim()}
+            variant="outline"
+            className="flex-1 h-12 text-base"
+          >
+            {generating ? <Loader2 className="size-5 mr-2 animate-spin" /> : <Lightbulb className="size-5 mr-2" />}
+            写思路
+          </Button>
+          <Button
+            onClick={() => generate(false)}
+            disabled={generating || !title.trim()}
+            className="flex-1 h-12 bg-emerald-500 hover:bg-emerald-600 text-base"
+          >
+            {generating ? <Loader2 className="size-5 mr-2 animate-spin" /> : <Pen className="size-5 mr-2" />}
+            写范文
+          </Button>
+        </div>
       </div>
     </div>
   )

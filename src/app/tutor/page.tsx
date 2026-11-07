@@ -16,6 +16,7 @@ import {
   BookOpen,
   FileText,
   LayoutGrid,
+  Bookmark,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authFetch } from "@/lib/auth-fetch"
@@ -221,6 +222,25 @@ export default function TutorHubPage() {
                 <div className="font-semibold text-base mb-1">全部记录</div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
                   汇总所有辅导会话、作文、错题本，按类型筛选，按日期分组
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* 收藏夹 */}
+          <button
+            onClick={() => router.push("/tutor/favorites")}
+            className="text-left p-5 rounded-2xl border bg-emerald-50/50 dark:bg-emerald-950/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <Bookmark className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">收藏夹</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  收藏作文、对话消息，按类型筛选查看
                 </div>
               </div>
               <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { useRouter, useParams } from "next/navigation"
 import {
   ArrowLeft, Loader2, RefreshCw, Pen, Volume2, Save, Mic,
+  Bookmark, BookmarkCheck, Lightbulb, FileText, Edit3,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -24,6 +25,7 @@ interface EssayDetail {
   outline: string
   imageData: string
   status: string
+  favorited: boolean
   createdAt: number
   updatedAt: number
 }
@@ -38,6 +40,8 @@ export default function EssayEditorPage() {
   const [rewritePrompt, setRewritePrompt] = useState("")
   const [showOutline, setShowOutline] = useState(false)
   const [editedEssay, setEditedEssay] = useState("")
+  const [editMode, setEditMode] = useState(false)
+  const [generatingOutline, setGeneratingOutline] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -101,9 +105,52 @@ export default function EssayEditorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ essay: editedEssay, outline: essay.outline }),
       })
+      setEssay((prev) => prev ? { ...prev, essay: editedEssay } : prev)
       toast.success("已保存")
     } catch {
       toast.error("保存失败")
+    }
+  }
+
+  const toggleFavorite = async () => {
+    if (!essay) return
+    try {
+      const resp = await authFetch(`/api/tutor/essays/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toggleFavorite: true }),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (resp.ok && data.ok) {
+        setEssay((prev) => prev ? { ...prev, favorited: data.favorited } : prev)
+        toast.success(data.favorited ? "已收藏" : "已取消收藏")
+      }
+    } catch (e) {
+      toast.error(`操作失败：${(e as Error).message}`)
+    }
+  }
+
+  const generateOutline = async () => {
+    if (!essay) return
+    setGeneratingOutline(true)
+    try {
+      let config
+      try { const raw = localStorage.getItem("ai-config"); if (raw) config = JSON.parse(raw) } catch {}
+      const resp = await authFetch(`/api/tutor/essays/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ generateOutline: true, config }),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok || !data.ok) {
+        throw new Error(data?.error || `HTTP ${resp.status}`)
+      }
+      setEssay((prev) => prev ? { ...prev, outline: data.outline } : prev)
+      toast.success("思路已生成")
+    } catch (e) {
+      toast.error(`生成失败：${(e as Error).message}`)
+    } finally {
+      setGeneratingOutline(false)
     }
   }
 
@@ -196,23 +243,81 @@ export default function EssayEditorPage() {
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-base font-semibold">范文</h2>
           <div className="flex items-center gap-1">
+            {/* 收藏按钮 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8"
+              onClick={toggleFavorite}
+              title={essay.favorited ? "取消收藏" : "收藏"}
+            >
+              {essay.favorited ? (
+                <BookmarkCheck className="size-4 text-emerald-500" />
+              ) : (
+                <Bookmark className="size-4" />
+              )}
+            </Button>
+            {/* 生成思路按钮 */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8"
+              onClick={generateOutline}
+              disabled={generatingOutline}
+              title="生成写作思路"
+            >
+              {generatingOutline ? <Loader2 className="size-4 animate-spin" /> : <Lightbulb className="size-4" />}
+              <span className="ml-1 text-xs">思路</span>
+            </Button>
             <TTSPlayer text={editedEssay || essay.essay} />
-            {editedEssay !== essay.essay && (
-              <Button variant="outline" size="sm" className="h-7" onClick={saveEdit}>
-                <Save className="size-3.5 mr-1" /> 保存修改
-              </Button>
-            )}
+            {/* 编辑/预览切换 */}
+            <Button
+              variant={editMode ? "default" : "ghost"}
+              size="sm"
+              className="h-8"
+              onClick={() => {
+                if (editMode && editedEssay !== essay.essay) saveEdit()
+                setEditMode((v) => !v)
+              }}
+              title={editMode ? "保存并预览" : "编辑"}
+            >
+              {editMode ? <Save className="size-4" /> : <Edit3 className="size-4" />}
+            </Button>
           </div>
         </div>
-        <Textarea
-          value={editedEssay}
-          onChange={(e) => setEditedEssay(e.target.value)}
-          className="min-h-[400px] text-sm leading-relaxed resize-y"
-          placeholder="范文正文..."
-        />
-        <div className="text-xs text-muted-foreground mt-2 text-right">
-          {isChinese ? `${editedEssay.length} 字` : `${editedEssay.split(/\s+/).filter(Boolean).length} 词`}
-        </div>
+        {/* 范文渲染：标题居中 + 段落缩进（预览模式）/ Textarea（编辑模式） */}
+        {editMode ? (
+          <Textarea
+            value={editedEssay}
+            onChange={(e) => setEditedEssay(e.target.value)}
+            className="min-h-[400px] text-sm leading-relaxed resize-y"
+            placeholder="范文正文..."
+          />
+        ) : (
+          <div className="min-h-[400px] bg-white rounded-lg p-6 border">
+            {/* 标题居中 */}
+            <h1 className="text-xl font-bold text-center mb-1" style={{ fontFamily: isChinese ? "serif" : "inherit" }}>
+              {essay.title}
+            </h1>
+            {/* 字数居中显示 */}
+            <div className="text-center text-xs text-muted-foreground mb-4">
+              {isChinese ? `${(editedEssay || essay.essay).length} 字` : `${(editedEssay || essay.essay).split(/\s+/).filter(Boolean).length} 词`} · {essay.genre}
+            </div>
+            {/* 正文：段落首行缩进 */}
+            <div className="text-sm leading-loose" style={{ fontFamily: isChinese ? "serif" : "inherit" }}>
+              {(editedEssay || essay.essay).split(/\n+/).map((para, i) => (
+                para.trim() ? (
+                  <p key={i} className="mb-3" style={{ textIndent: isChinese ? "2em" : "0" }}>
+                    {para}
+                  </p>
+                ) : null
+              ))}
+            </div>
+            <div className="mt-6 pt-4 border-t text-center text-xs text-muted-foreground">
+              内容由 AI 生成
+            </div>
+          </div>
+        )}
 
         {/* 重写区 */}
         <div className="mt-6 border-t pt-4">

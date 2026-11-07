@@ -13,6 +13,7 @@ interface EssayListItem {
   wordCount: number
   genre: string
   status: string
+  favorited: boolean
   createdAt: number
   updatedAt: number
 }
@@ -26,6 +27,8 @@ interface CreateBody {
   imageData?: string
   config?: AIProviderConfig
   generate?: boolean  // 是否立即生成范文
+  generateOutline?: boolean  // 是否生成写作思路（不生成范文）
+  favorite?: boolean  // 收藏/取消收藏
 }
 
 /** GET /api/tutor/essays — 列出作文 */
@@ -34,13 +37,13 @@ export async function GET() {
     const rows = await db.essaySession.findMany({
       orderBy: { updatedAt: "desc" },
       select: {
-        id: true, type: true, title: true, wordCount: true, genre: true, status: true,
+        id: true, type: true, title: true, wordCount: true, genre: true, status: true, favorited: true,
         createdAt: true, updatedAt: true,
       },
     })
     const list: EssayListItem[] = rows.map((r) => ({
       id: r.id, type: r.type, title: r.title, wordCount: r.wordCount,
-      genre: r.genre, status: r.status,
+      genre: r.genre, status: r.status, favorited: r.favorited,
       createdAt: r.createdAt.getTime(), updatedAt: r.updatedAt.getTime(),
     }))
     return NextResponse.json({ ok: true, essays: list })
@@ -67,7 +70,48 @@ export async function POST(req: Request) {
     let essay = ""
     let outline = ""
 
-    if (body.generate) {
+    if (body.generateOutline) {
+      // 只生成写作思路（不生成范文）
+      const sysPrompt = body.type === "chinese"
+        ? `你是一名语文作文辅导老师。根据题目要求，生成详细的写作思路（不写范文）。
+输出格式（JSON）：
+{
+  "analysis": "审题分析（200 字内，分析题意、立意方向）",
+  "material": "选材建议（推荐 3-4 个素材，每个一句话）",
+  "structure": ["开头：写法建议", "正文：分 2-3 段，每段要点", "结尾：升华方式"]
+}`
+        : `You are an English essay tutor. Generate detailed writing outline (no full essay).
+Output JSON:
+{
+  "analysis": "topic analysis (within 100 words)",
+  "material": "3-4 material suggestions",
+  "structure": ["introduction: ...", "body: 2-3 paragraphs with key points", "conclusion: ..."]
+}`
+      const messages: ChatMessage[] = [{ role: "system", content: sysPrompt }]
+      const userText = body.prompt || body.title
+      if (body.imageData) {
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text", text: userText },
+            { type: "image_url", image_url: { url: body.imageData } },
+          ],
+        })
+      } else {
+        messages.push({ role: "user", content: userText })
+      }
+      const result = await callVisionChat(messages, { config: body.config, maxTokens: 4096 })
+      try {
+        const txt = result.content.trim().replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim()
+        const start = txt.indexOf("{"), end = txt.lastIndexOf("}")
+        if (start !== -1 && end !== -1) {
+          const obj = JSON.parse(txt.slice(start, end + 1))
+          outline = JSON.stringify(obj)
+        }
+      } catch {
+        outline = JSON.stringify({ analysis: result.content })
+      }
+    } else if (body.generate) {
       // 立即生成范文
       const sysPrompt = body.type === "chinese"
         ? `你是一名语文作文辅导老师。根据用户提供的题目要求，撰写一篇高质量的范文。

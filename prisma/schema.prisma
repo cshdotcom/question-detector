@@ -84,15 +84,17 @@ model MistakeBook {
   id            String   @id
   title         String   @default("未命名错题本")
   subject       String   @default("math") // math | chinese | english | physics | chemistry | biology | other
-  // 错题列表 JSON：每项含 question(题目内容/image dataUrl)、answer(答案)、analysis(解析)、tags(标签)、createdAt
+  // 错题列表 JSON：每项含 question(题目内容/image dataUrl)、answer(答案)、analysis(解析)、tags(标签)、knowledgePoint(知识点)、createdAt
   items         String   @default("[]") // MistakeItem[] JSON
   cover         String   @default("") // 封面 dataUrl（可选）
   count         Int      @default(0) // 错题数量（冗余字段，方便列表显示）
+  isDefault     Boolean  @default(false) // 是否为默认学科错题本（系统预创建）
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 
   @@index([subject])
   @@index([createdAt])
+  @@index([isDefault])
 }
 
 // AI 写作文会话（语文作文 / 英语作文）
@@ -110,9 +112,30 @@ model EssaySession {
   // 可选附图（拍题拍物）
   imageData     String   @default("")
   status        String   @default("active") // active | archived
+  favorited     Boolean  @default(false) // 是否收藏
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 
   @@index([type])
   @@index([createdAt])
+  @@index([favorited])
+}
+
+// 收藏夹：可收藏作文、对话消息、错题等
+model Favorite {
+  id          String   @id
+  type        String   // "essay" | "message" | "mistake" | "whiteboard"
+  refId       String   // 被收藏对象的 ID
+  title       String   @default("")
+  summary     String   @default("") // 摘要预览
+  thumbnail   String   @default("") // 缩略图（如有）
+  // 完整内容快照（防止原对象被删除后无法查看）
+  content     String   @default("") // JSON 或文本
+  tags        String   @default("[]") // string[] JSON
+  source      String   @default("") // 来源（如 "AI 写作文"、"解题模式"）
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+  @@index([createdAt])
+  @@index([refId])
 }

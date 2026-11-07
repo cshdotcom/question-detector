@@ -17,6 +17,7 @@ interface MistakeBookItem {
   subject: string
   cover: string
   count: number
+  isDefault: boolean
   createdAt: number
   updatedAt: number
 }
@@ -79,14 +80,23 @@ export default function MistakesListPage() {
     }
   }
 
-  const onDelete = async (id: string) => {
-    if (!confirm("确定删除这个错题本？")) return
+  const onDelete = async (id: string, isDefault: boolean) => {
+    if (isDefault) {
+      if (!confirm("这是默认学科错题本，将清空内容但不删除，确定？")) return
+    } else {
+      if (!confirm("确定删除这个错题本？")) return
+    }
     try {
       await authFetch(`/api/tutor/mistakes/${id}`, { method: "DELETE" })
-      setBooks((prev) => prev.filter((b) => b.id !== id))
-      toast.success("已删除")
+      if (isDefault) {
+        // 默认本清空后刷新
+        load()
+      } else {
+        setBooks((prev) => prev.filter((b) => b.id !== id))
+      }
+      toast.success(isDefault ? "已清空" : "已删除")
     } catch (e) {
-      toast.error(`删除失败：${(e as Error).message}`)
+      toast.error(`操作失败：${(e as Error).message}`)
     }
   }
 
@@ -199,7 +209,7 @@ export default function MistakesListPage() {
                       variant="ghost"
                       size="sm"
                       className="size-7 p-0 text-destructive shrink-0"
-                      onClick={() => onDelete(b.id)}
+                      onClick={() => onDelete(b.id, b.isDefault)}
                     >
                       <Trash2 className="size-3.5" />
                     </Button>

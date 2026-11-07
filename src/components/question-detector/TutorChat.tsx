@@ -16,6 +16,7 @@ import {
   Pencil,
   Archive,
   ChevronDown,
+  Pen,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -24,6 +25,7 @@ import { authFetch } from "@/lib/auth-fetch"
 import { sendTutorChat, type TutorMessageMeta } from "@/lib/tutor-chat-client"
 import { TTSPlayer } from "./TTSPlayer"
 import { VoiceInput } from "./VoiceInput"
+import { Whiteboard, type Stroke as WBStroke, type WhiteboardData } from "./Whiteboard"
 import type { Question, AIProviderConfig } from "@/lib/types"
 import {
   DropdownMenu,
@@ -87,6 +89,8 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   const [pendingImages, setPendingImages] = useState<string[]>([])
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
+  const [showWhiteboard, setShowWhiteboard] = useState(false) // 交互白板开关
+  const [wbStrokes, setWbStrokes] = useState<WBStroke[]>([]) // 临时白板笔迹
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -267,6 +271,66 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
       toast.error(`归档失败：${(e as Error).message}`)
     }
   }, [session, sessionId, onBack])
+
+  // 临时白板另存为独立白板
+  const saveWhiteboardAsNew = useCallback(async (data: WhiteboardData) => {
+    try {
+      // 生成缩略图
+      let thumbnail = ""
+      try {
+        const svg = document.querySelector("svg[data-whiteboard-svg]") as SVGSVGElement | null
+        if (svg) {
+          const svgData = new XMLSerializer().serializeToString(svg)
+          const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" })
+          const url = URL.createObjectURL(svgBlob)
+          await new Promise<void>((resolve, reject) => {
+            const img = new Image()
+            img.onload = () => {
+              const MAX = 400
+              const w = data.width, h = data.height
+              const scale = Math.max(w, h) > MAX ? MAX / Math.max(w, h) : 1
+              const tw = Math.round(w * scale), th = Math.round(h * scale)
+              const canvas = document.createElement("canvas")
+              canvas.width = tw; canvas.height = th
+              const ctx = canvas.getContext("2d")
+              if (!ctx) return reject(new Error("ctx"))
+              ctx.fillStyle = "#ffffff"
+              ctx.fillRect(0, 0, tw, th)
+              ctx.drawImage(img, 0, 0, tw, th)
+              URL.revokeObjectURL(url)
+              thumbnail = canvas.toDataURL("image/jpeg", 0.7)
+              resolve()
+            }
+            img.onerror = () => reject(new Error("img load"))
+            img.src = url
+          })
+        }
+      } catch (e) {
+        console.warn("thumbnail failed:", e)
+      }
+      const resp = await authFetch("/api/tutor/whiteboards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `${session?.title || "辅导"} 的画板`,
+          strokes: data.strokes,
+          backgroundImage: data.backgroundImage,
+          width: data.width,
+          height: data.height,
+          sessionId,
+          thumbnail,
+        }),
+      })
+      const result = await resp.json().catch(() => ({}))
+      if (resp.ok && result.ok) {
+        toast.success("已保存为独立白板")
+      } else {
+        throw new Error(result?.error || `HTTP ${resp.status}`)
+      }
+    } catch (e) {
+      toast.error(`保存失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId])
 
   const send = async (msg?: string, regenerate = false) => {
     const message = (msg ?? input).trim()
@@ -529,6 +593,16 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
             onText={(text) => setInput((prev) => prev + text)}
             className="shrink-0"
           />
+          {/* 交互白板切换 */}
+          <Button
+            variant={showWhiteboard ? "default" : "ghost"}
+            size="sm"
+            className="h-11 w-11 p-0 shrink-0"
+            onClick={() => setShowWhiteboard((v) => !v)}
+            title="交互白板（可在解题/讲题时画画）"
+          >
+            <Pen className="size-4" />
+          </Button>
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -585,6 +659,32 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           )}
         </div>
       </div>
+
+      {/* 交互白板（弹出全屏覆盖） */}
+      {showWhiteboard && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col">
+          <header className="flex items-center gap-2 px-3 py-2 border-b shrink-0 bg-background">
+            <Button variant="ghost" size="sm" className="size-8 p-0" onClick={() => setShowWhiteboard(false)}>
+              <ChevronDown className="size-4" />
+            </Button>
+            <div className="size-7 rounded-md bg-cyan-500 text-white flex items-center justify-center shrink-0">
+              <Pen className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold">交互白板</div>
+              <div className="text-xs text-muted-foreground">画完后可「另存」为独立白板</div>
+            </div>
+          </header>
+          <Whiteboard
+            initialStrokes={wbStrokes}
+            width={1200}
+            height={800}
+            onChange={setWbStrokes}
+            onSaveAsNew={saveWhiteboardAsNew}
+            className="flex-1"
+          />
+        </div>
+      )}
     </div>
   )
 }

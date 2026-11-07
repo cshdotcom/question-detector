@@ -206,6 +206,9 @@ export async function POST(req: Request, ctx: RouteCtx) {
           meta.summary = parsed.summary
           meta.waitUserReply = parsed.waitUserReply
           meta.followUpQuestion = parsed.followUpQuestion
+          if (Array.isArray(parsed.suggestedTools)) {
+            meta.suggestedTools = parsed.suggestedTools
+          }
         }
         // 追加 assistant 消息
         history.push({

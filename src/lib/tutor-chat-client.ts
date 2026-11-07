@@ -15,6 +15,7 @@ export interface TutorMessageMeta {
   knowledgeCards?: unknown[]
   visualBoard?: { html?: string; width?: number; height?: number; caption?: string }
   visualization?: { type?: string; svg?: string; caption?: string }
+  suggestedTools?: { tool: string; reason: string }[]
 }
 
 export interface ChatCallbacks {

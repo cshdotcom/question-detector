@@ -176,10 +176,23 @@ ${imagePath ? "题目图片已附在本消息中。" : ""}
       "summary": "..."
     }
   ],
+  "suggestedTools": [                   // 可选：主动推荐学生用哪些白板工具（重要！要主动）
+    {
+      "tool": "pen|line|arrow|rect|circle|polygon|function|coordinate|...",
+      "reason": "为什么推荐这个工具（如：'画一个直角三角形来理解勾股定理'）"
+    }
+  ],
   "followUpQuestion": "...",            // 可选：抛给学生的思考问题
   "waitUserReply": true                 // 是否等待学生提问/回复
 }
 \`\`\`
+
+# 主动推荐白板工具（重要！）
+- 讲解几何题时，主动建议学生用 "polygon" 画三角形、"circle" 画圆、"coordinate" 建坐标系
+- 讲解函数题时，主动建议用 "function" 工具画函数图（如 y=x²）
+- 讲解代数题时，主动建议用 "text" 写公式推导
+- 讲解物理题时，主动建议用 "arrow" 画受力分析、"line" 画运动轨迹
+- suggestedTools 数组每项 tool 必须是上述工具名之一，reason 简短中文说明用途
 
 # HTML 画板要求
 - 完整的 HTML 文档片段（不需要 <html><body> 包裹，直接写内容）

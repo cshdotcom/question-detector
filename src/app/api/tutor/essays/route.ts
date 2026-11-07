@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { callVisionChat, type ChatMessage } from "@/lib/ai-service"
+import { extractTutorJSON } from "@/lib/tutor-prompt"
 import type { AIProviderConfig } from "@/lib/types"
 
 export const runtime = "nodejs"
@@ -171,18 +172,13 @@ Output format (JSON):
       const result = await callVisionChat(messages, { config: body.config, maxTokens: 8192 })
       // 解析 JSON
       const text = result.content.trim()
-      try {
-        // 去除可能的 markdown 代码块
-        const cleaned = text.replace(/```(?:json)?\s*/g, "").replace(/```/g, "").trim()
-        const start = cleaned.indexOf("{")
-        const end = cleaned.lastIndexOf("}")
-        if (start !== -1 && end !== -1) {
-          const json = JSON.parse(cleaned.slice(start, end + 1))
-          essay = json.essay || ""
-          outline = JSON.stringify(json.outline || {})
-        }
-      } catch {
-        // JSON 解析失败，直接当文本
+      // 用 extractTutorJSON 容错解析（处理 HTML 中的未转义引号）
+      const parsed = extractTutorJSON(text)
+      if (parsed) {
+        essay = String(parsed.essay || "")
+        outline = JSON.stringify(parsed.outline || {})
+      } else {
+        // 解析失败，直接当文本
         essay = text
       }
     }

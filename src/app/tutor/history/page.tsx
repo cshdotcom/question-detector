@@ -1,13 +1,14 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import {
   ArrowLeft, Loader2, History, Brain, Lightbulb, Pen, BookOpen,
-  Image as ImageIcon, FileText,
+  Image as ImageIcon, FileText, Trash2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authFetch } from "@/lib/auth-fetch"
+import { toast } from "sonner"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
 
 interface HistoryItem {
@@ -15,9 +16,11 @@ interface HistoryItem {
   type: "tutor-solve" | "tutor-lecture" | "essay" | "mistake"
   title: string
   subtitle: string
+  preview: string  // 内容预览（前 100 字）
   thumbnail: string
   updatedAt: number
   url: string
+  deleteUrl?: string  // 删除 API URL
 }
 
 const TYPE_META: Record<HistoryItem["type"], { name: string; color: string; icon: typeof Brain }> = {
@@ -33,70 +36,90 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<HistoryItem["type"] | "all">("all")
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true)
-      try {
-        const [tutorResp, essayResp, mistakeResp] = await Promise.all([
-          authFetch("/api/tutor/sessions", { cache: "no-store" }),
-          authFetch("/api/tutor/essays", { cache: "no-store" }),
-          authFetch("/api/tutor/mistakes", { cache: "no-store" }),
-        ])
-        const [tutorData, essayData, mistakeData] = await Promise.all([
-          tutorResp.json().catch(() => ({})),
-          essayResp.json().catch(() => ({})),
-          mistakeResp.json().catch(() => ({})),
-        ])
-        const allItems: HistoryItem[] = []
-        if (tutorData.ok) {
-          for (const s of (tutorData.sessions || [])) {
-            allItems.push({
-              id: s.id,
-              type: s.type === "solve" ? "tutor-solve" : "tutor-lecture",
-              title: s.title,
-              subtitle: s.type === "solve" ? `阶段 ${s.stage || 0}/6` : "讲题模式",
-              thumbnail: s.thumbnail || "",
-              updatedAt: s.updatedAt,
-              url: `/tutor/${s.type}/${s.id}`,
-            })
-          }
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [tutorResp, essayResp, mistakeResp] = await Promise.all([
+        authFetch("/api/tutor/sessions", { cache: "no-store" }),
+        authFetch("/api/tutor/essays", { cache: "no-store" }),
+        authFetch("/api/tutor/mistakes", { cache: "no-store" }),
+      ])
+      const [tutorData, essayData, mistakeData] = await Promise.all([
+        tutorResp.json().catch(() => ({})),
+        essayResp.json().catch(() => ({})),
+        mistakeResp.json().catch(() => ({})),
+      ])
+      const allItems: HistoryItem[] = []
+      if (tutorData.ok) {
+        for (const s of (tutorData.sessions || [])) {
+          allItems.push({
+            id: s.id,
+            type: s.type === "solve" ? "tutor-solve" : "tutor-lecture",
+            title: s.title,
+            subtitle: s.type === "solve" ? `阶段 ${s.stage || 0}/6` : "讲题模式",
+            preview: s.title,
+            thumbnail: s.thumbnail || "",
+            updatedAt: s.updatedAt,
+            url: `/tutor/${s.type}/${s.id}`,
+            deleteUrl: `/api/tutor/sessions/${s.id}`,
+          })
         }
-        if (essayData.ok) {
-          for (const e of (essayData.essays || [])) {
-            allItems.push({
-              id: e.id,
-              type: "essay",
-              title: e.title,
-              subtitle: `${e.genre} · ${e.wordCount}${e.type === "chinese" ? "字" : "词"}`,
-              thumbnail: "",
-              updatedAt: e.updatedAt,
-              url: `/tutor/essay/${e.id}`,
-            })
-          }
-        }
-        if (mistakeData.ok) {
-          for (const m of (mistakeData.books || [])) {
-            allItems.push({
-              id: m.id,
-              type: "mistake",
-              title: m.title,
-              subtitle: `${m.count} 题`,
-              thumbnail: m.cover || "",
-              updatedAt: m.updatedAt,
-              url: `/tutor/mistakes/${m.id}`,
-            })
-          }
-        }
-        // 按更新时间排序
-        allItems.sort((a, b) => b.updatedAt - a.updatedAt)
-        setItems(allItems)
-      } catch (e) {
-        console.error("history load failed:", e)
-      } finally {
-        setLoading(false)
       }
-    })()
+      if (essayData.ok) {
+        for (const e of (essayData.essays || [])) {
+          allItems.push({
+            id: e.id,
+            type: "essay",
+            title: e.title,
+            subtitle: `${e.genre} · ${e.wordCount}${e.type === "chinese" ? "字" : "词"}`,
+            preview: e.title,
+            thumbnail: "",
+            updatedAt: e.updatedAt,
+            url: `/tutor/essay/${e.id}`,
+            deleteUrl: `/api/tutor/essays/${e.id}`,
+          })
+        }
+      }
+      if (mistakeData.ok) {
+        for (const m of (mistakeData.books || [])) {
+          allItems.push({
+            id: m.id,
+            type: "mistake",
+            title: m.title,
+            subtitle: `${m.count} 题`,
+            preview: `${m.subject} · ${m.count} 题`,
+            thumbnail: m.cover || "",
+            updatedAt: m.updatedAt,
+            url: `/tutor/mistakes/${m.id}`,
+            deleteUrl: m.isDefault ? undefined : `/api/tutor/mistakes/${m.id}`,
+          })
+        }
+      }
+      allItems.sort((a, b) => b.updatedAt - a.updatedAt)
+      setItems(allItems)
+    } catch (e) {
+      console.error("history load failed:", e)
+    } finally {
+      setLoading(false)
+    }
   }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const onDelete = async (item: HistoryItem) => {
+    if (!item.deleteUrl) {
+      toast.info("默认错题本不可删除，只能清空内容")
+      return
+    }
+    if (!confirm("确定删除这条记录？")) return
+    try {
+      await authFetch(item.deleteUrl, { method: "DELETE" })
+      setItems((prev) => prev.filter((i) => i.id !== item.id || i.type !== item.type))
+      toast.success("已删除")
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`)
+    }
+  }
 
   // 按日期分组
   const filtered = filter === "all" ? items : items.filter((i) => i.type === filter)
@@ -164,27 +187,45 @@ export default function HistoryPage() {
                     const meta = TYPE_META[item.type]
                     const Icon = meta.icon
                     return (
-                      <button
+                      <div
                         key={`${item.type}-${item.id}`}
-                        onClick={() => router.push(item.url)}
-                        className="text-left rounded-xl border bg-card overflow-hidden hover:shadow-md transition-shadow group"
+                        className="group text-left rounded-xl border bg-card overflow-hidden hover:shadow-md transition-shadow"
                       >
-                        <div className="aspect-[3/2] bg-muted relative flex items-center justify-center">
-                          {item.thumbnail ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={item.thumbnail} alt={item.title} className="w-full h-full object-cover" />
-                          ) : (
-                            <Icon className="size-10 text-muted-foreground/50" />
-                          )}
-                          <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] text-white font-medium ${meta.color}`}>
-                            {meta.name}
+                        <button onClick={() => router.push(item.url)} className="block w-full text-left">
+                          <div className="aspect-[3/2] bg-muted relative flex items-center justify-center p-4">
+                            {item.thumbnail ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={item.thumbnail} alt={item.title} className="w-full h-full object-cover" />
+                            ) : (
+                              <div className="text-xs text-muted-foreground/70 line-clamp-4 text-center">
+                                {item.preview || "（暂无内容预览）"}
+                              </div>
+                            )}
+                            <div className={`absolute top-2 left-2 px-2 py-0.5 rounded-md text-[10px] text-white font-medium ${meta.color}`}>
+                              {meta.name}
+                            </div>
+                            <div className="absolute bottom-2 right-2 px-1.5 py-0.5 rounded text-[10px] bg-black/50 text-white">
+                              {new Date(item.updatedAt).toLocaleTimeString("zh-CN", { hour: "numeric", minute: "numeric" })}
+                            </div>
                           </div>
+                          <div className="p-3">
+                            <div className="text-sm font-medium truncate">{item.title}</div>
+                            <div className="text-xs text-muted-foreground mt-0.5 truncate">{item.subtitle}</div>
+                          </div>
+                        </button>
+                        <div className="px-3 pb-3 flex items-center justify-between">
+                          <span className="text-[10px] text-muted-foreground">
+                            {new Date(item.updatedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "numeric", minute: "numeric" })}
+                          </span>
+                          <button
+                            onClick={() => onDelete(item)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center"
+                            title="删除"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
                         </div>
-                        <div className="p-3">
-                          <div className="text-sm font-medium truncate">{item.title}</div>
-                          <div className="text-xs text-muted-foreground mt-0.5">{item.subtitle}</div>
-                        </div>
-                      </button>
+                      </div>
                     )
                   })}
                 </div>

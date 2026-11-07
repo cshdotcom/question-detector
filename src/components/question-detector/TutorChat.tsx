@@ -19,10 +19,15 @@ import {
   Pen,
   Bookmark,
   CheckCircle2,
+  Volume2,
+  VolumeX,
+  Gauge,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
+import { Slider } from "@/components/ui/slider"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { toast } from "sonner"
 import { authFetch } from "@/lib/auth-fetch"
 import { sendTutorChat, type TutorMessageMeta } from "@/lib/tutor-chat-client"
@@ -92,8 +97,12 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   const [pendingImages, setPendingImages] = useState<string[]>([])
   const [renaming, setRenaming] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
-  const [showWhiteboard, setShowWhiteboard] = useState(false) // 交互白板开关
-  const [wbStrokes, setWbStrokes] = useState<WBStroke[]>([]) // 临时白板笔迹
+  const [showWhiteboard, setShowWhiteboard] = useState(false)
+  const [wbStrokes, setWbStrokes] = useState<WBStroke[]>([])
+  // 自动音频：默认关闭，用户开启后 AI 输出完自动 TTS 播放
+  const [autoAudio, setAutoAudio] = useState(false)
+  const [audioSpeed, setAudioSpeed] = useState(1.0)
+  const [lastError, setLastError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -431,12 +440,27 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
         })
         setStreaming(false)
         abortRef.current = null
+        // 自动播放音频
+        if (autoAudio && fullContent) {
+          try {
+            if (typeof window !== "undefined" && window.speechSynthesis) {
+              window.speechSynthesis.cancel()
+              const u = new SpeechSynthesisUtterance(fullContent.replace(/<[^>]+>/g, "").slice(0, 4000))
+              u.rate = audioSpeed
+              u.lang = "zh-CN"
+              window.speechSynthesis.speak(u)
+            }
+          } catch {}
+        }
       },
       onError: (err) => {
         setStreamContent("")
         setStreaming(false)
         abortRef.current = null
-        toast.error(`AI 失败：${err}`)
+        setLastError(err)
+        toast.error(`AI 失败：${err}`, {
+          action: { label: "重试", onClick: () => { setLastError(null); send("", true) } },
+        })
       },
     })
   }
@@ -498,6 +522,40 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           <div className="text-xs px-2 py-1 rounded bg-muted shrink-0">
             第 {session.questionSnapshot.number} 题
           </div>
+        )}
+        {/* 自动音频按钮 */}
+        <Button
+          variant={autoAudio ? "default" : "ghost"}
+          size="sm"
+          className="h-8 px-2 shrink-0 gap-1"
+          onClick={() => setAutoAudio((v) => !v)}
+          title={autoAudio ? "自动播放已开启" : "自动播放已关闭"}
+        >
+          {autoAudio ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
+          {autoAudio && <span className="text-xs">{audioSpeed.toFixed(1)}x</span>}
+        </Button>
+        {/* 速度调节（自动音频开启时显示） */}
+        {autoAudio && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-8 w-7 p-0 shrink-0" title="语速">
+                <Gauge className="size-3.5" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48">
+              <div className="space-y-2">
+                <div className="text-xs font-medium">语速 {audioSpeed.toFixed(1)}x</div>
+                <Slider value={[audioSpeed]} onValueChange={(v) => setAudioSpeed(v[0])} min={0.5} max={2.0} step={0.1} />
+                <div className="flex gap-1">
+                  {[0.5, 1.0, 1.5, 2.0].map((s) => (
+                    <button key={s} onClick={() => setAudioSpeed(s)} className={`px-2 py-0.5 rounded text-xs ${audioSpeed === s ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+                      {s}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
         )}
         {/* 更多操作菜单 */}
         <DropdownMenu>

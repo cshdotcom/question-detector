@@ -295,10 +295,20 @@ export default function EssayEditorPage() {
           />
         ) : (
           <div className="min-h-[400px] bg-white rounded-lg p-6 border">
-            {/* 标题居中 */}
-            <h1 className="text-xl font-bold text-center mb-1" style={{ fontFamily: isChinese ? "serif" : "inherit" }}>
-              {essay.title}
-            </h1>
+            {/* 标题居中：优先用 AI 生成的标题（范文第一行），否则用用户输入的标题 */}
+            {(() => {
+              const essayText = editedEssay || essay.essay
+              const firstLine = essayText.split(/\n+/)[0]?.trim() || ""
+              // 如果第一行短（≤30字）且不含句号，视为标题
+              const displayTitle = (firstLine.length <= 30 && !firstLine.includes("。") && !firstLine.includes(".") && firstLine.length > 0)
+                ? firstLine
+                : essay.title
+              return (
+                <h1 className="text-xl font-bold text-center mb-1" style={{ fontFamily: isChinese ? "serif" : "inherit" }}>
+                  {displayTitle}
+                </h1>
+              )
+            })()}
             {/* 字数居中显示 */}
             <div className="text-center text-xs text-muted-foreground mb-4">
               {isChinese ? `${(editedEssay || essay.essay).length} 字` : `${(editedEssay || essay.essay).split(/\s+/).filter(Boolean).length} 词`} · {essay.genre}

@@ -263,9 +263,55 @@ export function extractTutorJSON(text: string): Record<string, unknown> | null {
   try {
     return JSON.parse(s)
   } catch {
-    // 2. 容错 fallback：用 regex 逐字段提取
+    // 2. 尝试修复未转义引号（HTML 属性中的双引号）后重新解析
+    const fixed = fixUnescapedQuotes(s)
+    if (fixed !== s) {
+      try {
+        return JSON.parse(fixed)
+      } catch {}
+    }
+    // 3. 容错 fallback：用 regex 逐字段提取
     return extractFieldsRelaxed(s)
   }
+}
+
+/** 修复 JSON 字符串值中的未转义双引号
+ *  AI 经常在 HTML 属性中用双引号（如 style="color:red"）导致 JSON 解析失败
+ *  算法：逐字符扫描，在字符串值内部遇到 " 时检查后面是否是 JSON 结构字符
+ *  如果不是，则转义为 \" */
+function fixUnescapedQuotes(s: string): string {
+  let result = ""
+  let i = 0
+  let inString = false
+  while (i < s.length) {
+    const ch = s[i]
+    if (!inString) {
+      if (ch === '"') inString = true
+      result += ch
+      i++
+    } else {
+      if (ch === "\\") {
+        result += ch + (s[i + 1] || "")
+        i += 2
+      } else if (ch === '"') {
+        let j = i + 1
+        while (j < s.length && (s[j] === " " || s[j] === "\t" || s[j] === "\n" || s[j] === "\r")) j++
+        const next = s[j]
+        if (next === "," || next === "}" || next === "]" || next === ":") {
+          inString = false
+          result += ch
+          i++
+        } else {
+          result += '\\"'
+          i++
+        }
+      } else {
+        result += ch
+        i++
+      }
+    }
+  }
+  return result
 }
 
 /** 用 regex 提取顶层字段（容错版本）
@@ -313,21 +359,42 @@ function extractFieldsRelaxed(s: string): Record<string, unknown> | null {
     // 容错：把字符串里的 \n 转成换行
     result["content"] = contentMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\")
   }
-  // visualBoard 单独处理（嵌套对象）
-  const vbMatch = /"visualBoard"\s*:\s*\{([\s\S]*?)\}\s*,\s*"(?:knowledgeCards|stage|waitUserReply|summary|title|followUpQuestion|visualization)/.exec(s)
-  if (vbMatch) {
-    try {
-      // 尝试解析嵌套对象
-      const vbObj = JSON.parse("{" + vbMatch[1] + "}")
-      result["visualBoard"] = vbObj
-    } catch {
-      // fallback: 提取 html 字段
-      const htmlMatch = /"html"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:width|height|caption)/.exec(vbMatch[1])
-      if (htmlMatch) {
-        result["visualBoard"] = {
-          html: htmlMatch[1].replace(/\\"/g, '"').replace(/\\n/g, "\n").replace(/\\\\/g, "\\"),
-        }
-      }
+  // visualBoard 提取 html 字段（宽松匹配，处理含引号的 HTML）
+  const vbHtmlMatch = /"html"\s*:\s*"([\s\S]*?)"\s*,\s*"(?:width|height|caption)/.exec(s)
+  if (vbHtmlMatch) {
+    const html = vbHtmlMatch[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+    const widthMatch = /"width"\s*:\s*(\d+)/.exec(s)
+    const heightMatch = /"height"\s*:\s*(\d+)/.exec(s)
+    const captionMatch = /"caption"\s*:\s*"([\s\S]*?)"\s*[,}]/.exec(s)
+    result["visualBoard"] = {
+      html, width: widthMatch ? parseInt(widthMatch[1]) : 800,
+      height: heightMatch ? parseInt(heightMatch[1]) : 400,
+      caption: captionMatch ? captionMatch[1] : "",
+    }
+  }
+  // visualQuestion 宽松匹配
+  const vqPromptMatch = /"visualQuestion"[\s\S]*?"prompt"\s*:\s*"([\s\S]*?)"\s*[,}]/.exec(s)
+  if (vqPromptMatch) {
+    const vqTypeMatch = /"visualQuestion"[\s\S]*?"type"\s*:\s*"(draw|image|either|choice|input)"/.exec(s)
+    result["visualQuestion"] = {
+      prompt: vqPromptMatch[1],
+      type: vqTypeMatch ? vqTypeMatch[1] : "input",
+    }
+  }
+  // suggestedTools
+  const stMatch = /"suggestedTools"\s*:\s*\[([\s\S]*?)\]/.exec(s)
+  if (stMatch) {
+    try { result["suggestedTools"] = JSON.parse("[" + stMatch[1] + "]") } catch { result["suggestedTools"] = [] }
+  }
+  // knowledgeCards 宽松匹配
+  const kcMatch = /"knowledgeCards"\s*:\s*\[([\s\S]*?)\]/.exec(s)
+  if (kcMatch) {
+    try { result["knowledgeCards"] = JSON.parse("[" + kcMatch[1] + "]") } catch {
+      const cards: unknown[] = []
+      const cardRegex = /\{[^{]*?"title"\s*:\s*"([^"]*?)"[^{]*?"svg"\s*:\s*"([\s\S]*?)"[^}]*?\}/g
+      let cm
+      while ((cm = cardRegex.exec(kcMatch[1])) !== null) cards.push({ title: cm[1], svg: cm[2], summary: "" })
+      result["knowledgeCards"] = cards
     }
   }
   return Object.keys(result).length > 0 ? result : null

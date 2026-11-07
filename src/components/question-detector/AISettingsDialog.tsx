@@ -191,7 +191,10 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        className="max-w-md"
+        style={{ maxHeight: "90vh", overflowY: "auto" }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Settings2 className="size-5" /> AI 模型设置
@@ -559,11 +562,89 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
           </div>
         </div>
 
+        {/* 后端配置状态（env）展示 */}
+        <BackendConfigStatus />
+
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
           <Button onClick={onSave} className="bg-rose-500 hover:bg-rose-600">保存</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// 后端配置状态展示：显示 env 中配置的 AI/TTS/ASR/灰度状态
+function BackendConfigStatus() {
+  const [status, setStatus] = useState<{
+    llm?: { configured: boolean; baseURL: string; model: string }
+    tts?: { configured: boolean; baseURL: string; model: string; voice: string }
+    asr?: { configured: boolean; baseURL: string; model: string }
+    gradients?: Record<string, number>
+    hasPassword?: boolean
+  } | null>(null)
+
+  useEffect(() => {
+    fetch("/api/env-config")
+      .then((r) => r.json())
+      .then((d) => setStatus(d))
+      .catch(() => {})
+  }, [])
+
+  if (!status) return null
+
+  const envVars = [
+    { label: "LLM 对话模型", configured: status.llm?.configured, detail: status.llm?.model },
+    { label: "TTS 语音合成", configured: status.tts?.configured, detail: status.tts?.model },
+    { label: "ASR 语音识别", configured: status.asr?.configured, detail: status.asr?.model },
+  ]
+
+  return (
+    <div className="border-t pt-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <Settings2 className="size-4 text-muted-foreground" />
+        <h4 className="text-sm font-medium">后端配置状态（.env）</h4>
+      </div>
+      <div className="space-y-1">
+        {envVars.map((v) => (
+          <div key={v.label} className="flex items-center justify-between text-xs px-2 py-1 rounded bg-muted/30">
+            <span>{v.label}</span>
+            <div className="flex items-center gap-2">
+              {v.detail && <span className="text-muted-foreground">{v.detail}</span>}
+              <span className={`px-1.5 py-0.5 rounded text-[10px] ${v.configured ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>
+                {v.configured ? "已配置" : "未配置"}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* 灰度配置 */}
+      {status.gradients && Object.keys(status.gradients).length > 0 && (
+        <div className="px-2 py-1.5 rounded bg-muted/30">
+          <div className="text-xs font-medium text-muted-foreground mb-1">特性灰度</div>
+          <div className="space-y-0.5">
+            {Object.entries(status.gradients).map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between text-xs">
+                <span>{k === "_global" ? "全局" : k}</span>
+                <span className="tabular-nums">{v}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="text-xs text-muted-foreground px-2">
+        提示：前端配置（上方）优先于后端 env。后端 env 用于所有设备共享的默认配置。
+        <br />
+        支持的环境变量：
+        <br />
+        • LLM: AI_BASE_URL / AI_API_KEY / AI_MODEL
+        <br />
+        • TTS: AI_TTS_BASE_URL / AI_TTS_API_KEY / AI_TTS_MODEL / AI_TTS_VOICE
+        <br />
+        • ASR: AI_ASR_BASE_URL / AI_ASR_API_KEY / AI_ASR_MODEL
+        <br />
+        • 灰度: AI_FEATURE_GRADIENT（如 &quot;whiteboard:100,tts:50&quot;）
+      </div>
+    </div>
   )
 }

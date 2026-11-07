@@ -166,6 +166,15 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
       const cacheKey = messageId || text.slice(0, 100)
       let dataUrl = aiAudioCache.get(cacheKey)
       if (!dataUrl) {
+        // 如果配置了第三方 TTS，把配置传给后端（后端会用第三方 API 而非 z-ai SDK）
+        const ttsConfig = config.thirdpartyTTSUrl && config.thirdpartyTTSKey
+          ? {
+              baseURL: config.thirdpartyTTSUrl,
+              apiKey: config.thirdpartyTTSKey,
+              model: config.thirdpartyTTSModel,
+              voice: config.aiVoice,  // 用 AI voice 字段作为第三方 voice
+            }
+          : undefined
         const resp = await authFetch("/api/tutor/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -173,6 +182,7 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
             text: stripInlineTags(text).slice(0, 4000),  // AI TTS 限制单次长度
             voice: config.aiVoice,
             speed: config.aiSpeed,
+            config: ttsConfig,
           }),
         })
         const data = await resp.json().catch(() => ({}))
@@ -204,46 +214,49 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
     }
   }, [text, config.aiVoice, config.aiSpeed, messageId, stopAll])
 
-  // 第三方 TTS（OpenAI 兼容 /audio/speech）
+  // 第三方 TTS：通过后端代理调用（避免浏览器暴露 key，且后端可用 env 配置）
   const playThirdparty = useCallback(async () => {
     if (!text) return
-    if (!config.thirdpartyTTSUrl || !config.thirdpartyTTSKey) {
-      toast.error("请先在 AI 设置中配置第三方 TTS API")
-      return
-    }
     stopAll()
     setLoadingEngine("thirdparty")
     try {
-      const resp = await fetch(config.thirdpartyTTSUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${config.thirdpartyTTSKey}`,
-        },
-        body: JSON.stringify({
-          model: config.thirdpartyTTSModel || "tts-1",
-          input: stripInlineTags(text).slice(0, 4000),
-          voice: "alloy",
-          response_format: "mp3",
-        }),
-      })
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => "")
-        throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 200)}`)
+      const cacheKey = `tp_${messageId || text.slice(0, 100)}`
+      let dataUrl = aiAudioCache.get(cacheKey)
+      if (!dataUrl) {
+        const resp = await authFetch("/api/tutor/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: stripInlineTags(text).slice(0, 4000),
+            voice: config.aiVoice || "alloy",
+            speed: config.aiSpeed,
+            config: {
+              baseURL: config.thirdpartyTTSUrl,
+              apiKey: config.thirdpartyTTSKey,
+              model: config.thirdpartyTTSModel || "tts-1",
+              voice: config.aiVoice || "alloy",
+            },
+          }),
+        })
+        const data = await resp.json().catch(() => ({}))
+        if (!resp.ok || !data.ok) {
+          throw new Error(data?.error || `HTTP ${resp.status}`)
+        }
+        dataUrl = data.audioDataUrl
+        if (dataUrl) aiAudioCache.set(cacheKey, dataUrl)
       }
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      const audio = new Audio(url)
+      if (!dataUrl) throw new Error("第三方 TTS 返回为空")
+      const audio = new Audio(dataUrl)
       audioRef.current = audio
       audio.onplay = () => { setLoadingEngine(null); setPlayingEngine("thirdparty") }
-      audio.onended = () => { setPlayingEngine(null); URL.revokeObjectURL(url) }
+      audio.onended = () => setPlayingEngine(null)
       audio.onerror = () => { setLoadingEngine(null); setPlayingEngine(null); toast.error("第三方音频播放失败") }
       await audio.play()
     } catch (e) {
       setLoadingEngine(null)
       toast.error(`第三方 TTS 失败：${(e as Error).message}`)
     }
-  }, [text, config.thirdpartyTTSUrl, config.thirdpartyTTSKey, config.thirdpartyTTSModel, stopAll])
+  }, [text, config.thirdpartyTTSUrl, config.thirdpartyTTSKey, config.thirdpartyTTSModel, config.aiVoice, config.aiSpeed, messageId, stopAll])
 
   const togglePlay = (engine: TTSEngine) => {
     if (playingEngine === engine) {

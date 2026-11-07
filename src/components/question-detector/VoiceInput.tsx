@@ -219,12 +219,8 @@ export function VoiceInput({ onText, className }: VoiceInputProps) {
     }
   }, [config.autoAppend, onText])
 
-  // 第三方 ASR：用 MediaRecorder 录音，发到第三方 API
+  // 第三方 ASR：通过后端代理调用（避免浏览器暴露 key，且后端可用 env 配置）
   const startThirdpartyASR = useCallback(async () => {
-    if (!config.thirdpartyASRUrl || !config.thirdpartyASRKey) {
-      toast.error("请先在 AI 设置中配置第三方 ASR API")
-      return
-    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       streamRef.current = stream
@@ -246,25 +242,36 @@ export function VoiceInput({ onText, className }: VoiceInputProps) {
         setTranscribing(true)
         try {
           const blob = new Blob(audioChunksRef.current, { type: mimeType })
-          const formData = new FormData()
-          formData.append("file", blob, "audio.webm")
-          formData.append("model", config.thirdpartyASRModel || "whisper-1")
-          const resp = await fetch(config.thirdpartyASRUrl, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${config.thirdpartyASRKey}` },
-            body: formData,
-          })
-          if (!resp.ok) {
-            const txt = await resp.text().catch(() => "")
-            throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 200)}`)
+          const reader = new FileReader()
+          reader.onload = async () => {
+            const dataUrl = reader.result as string
+            const base64 = dataUrl.split(",")[1]
+            const format = mimeType.split("/")[1].split(";")[0]
+            const resp = await authFetch("/api/tutor/asr", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                audio: base64,
+                format,
+                config: {
+                  baseURL: config.thirdpartyASRUrl,
+                  apiKey: config.thirdpartyASRKey,
+                  model: config.thirdpartyASRModel || "whisper-1",
+                },
+              }),
+            })
+            const data = await resp.json().catch(() => ({}))
+            if (!resp.ok || !data.ok) {
+              throw new Error(data?.error || `HTTP ${resp.status}`)
+            }
+            const text = (data.text || "").trim()
+            if (text) {
+              onText(config.autoAppend ? text + " " : text)
+            } else {
+              toast.info("未识别到语音内容")
+            }
           }
-          const data = await resp.json()
-          const text = (data.text || "").trim()
-          if (text) {
-            onText(config.autoAppend ? text + " " : text)
-          } else {
-            toast.info("未识别到语音内容")
-          }
+          reader.readAsDataURL(blob)
         } catch (e) {
           toast.error(`第三方 ASR 失败：${(e as Error).message}`)
         } finally {

@@ -1,0 +1,769 @@
+     1→     1→"use client"
+     2→     2→
+     3→     3→import { useState } from "react"
+     4→     4→import {
+     5→     5→  Download,
+     6→     6→  FileJson,
+     7→     7→  FileText,
+     8→     8→  Copy,
+     9→     9→  FileType,
+    10→    10→  FileSpreadsheet,
+    11→    11→  Printer,
+    12→    12→  Loader2,
+    13→    13→  Images,
+    14→    14→  ImageIcon,
+    15→    15→  CheckSquare,
+    16→    16→  Square,
+    17→    17→} from "lucide-react"
+    18→    18→import { toast } from "sonner"
+    19→    19→import { useDetectorStore } from "@/lib/store"
+    20→    20→import { Button } from "@/components/ui/button"
+    21→    21→import {
+    22→    22→  DropdownMenu,
+    23→    23→  DropdownMenuContent,
+    24→    24→  DropdownMenuItem,
+    25→    25→  DropdownMenuTrigger,
+    26→    26→  DropdownMenuLabel,
+    27→    27→  DropdownMenuSeparator,
+    28→    28→  DropdownMenuSub,
+    29→    29→  DropdownMenuSubContent,
+    30→    30→  DropdownMenuSubTrigger,
+    31→    31→} from "@/components/ui/dropdown-menu"
+    32→    32→import {
+    33→    33→  Dialog,
+    34→    34→  DialogContent,
+    35→    35→  DialogHeader,
+    36→    36→  DialogTitle,
+    37→    37→  DialogDescription,
+    38→    38→  DialogFooter,
+    39→    39→} from "@/components/ui/dialog"
+    40→    40→import { Checkbox } from "@/components/ui/checkbox"
+    41→    41→import {
+    42→    42→  cropToDataUrl,
+    43→    43→  dataUrlToBlob,
+    44→    44→  downloadBlob,
+    45→    45→  buildExportData,
+    46→    46→} from "@/lib/image-utils"
+    47→    47→import { renderImageWithBoxes } from "@/lib/merge-images"
+    48→    48→import { renderQuestionToCanvas, renderImageFullPage } from "@/lib/render-question"
+    49→    49→
+    50→    50→interface ExportMenuProps {
+    51→    51→  /** 限制只导出当前图片（当页导出） */
+    52→    52→  currentImageOnly?: boolean
+    53→    53→}
+    54→    54→
+    55→    55→export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
+    56→    56→  const images = useDetectorStore((s) => s.images)
+    57→    57→  const currentImageId = useDetectorStore((s) => s.currentImageId)
+    58→    58→  const [busy, setBusy] = useState(false)
+    59→    59→  const [selectImagesOpen, setSelectImagesOpen] = useState(false)
+    60→    60→  const [selectedImageIds, setSelectedImageIds] = useState<Set<string>>(new Set())
+    61→    61→  const [pendingAction, setPendingAction] = useState<"pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped" | null>(null)
+    62→    62→  // 导出选项：是否含题目原图截图 / 配图 / 批改结果
+    63→    63→  const [optIncludeImage, setOptIncludeImage] = useState(true)
+    64→    64→  const [optIncludeSubImages, setOptIncludeSubImages] = useState(true)
+    65→    65→  const [optIncludeGrading, setOptIncludeGrading] = useState(true)
+    66→    66→
+    67→    67→  // 当前要导出的图片列表
+    68→    68→  const targetImages = currentImageOnly
+    69→    69→    ? images.filter((im) => im.id === currentImageId)
+    70→    70→    : selectedImageIds.size > 0
+    71→    71→    ? images.filter((im) => selectedImageIds.has(im.id))
+    72→    72→    : images
+    73→    73→
+    74→    74→  // 打开"选择图片+选项"对话框
+    75→    75→  const openSelectImages = (action: "pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped") => {
+    76→    76→    if (images.length === 0) {
+    77→    77→      toast.error("没有图片可导出")
+    78→    78→      return
+    79→    79→    }
+    80→    80→    setPendingAction(action)
+    81→    81→    setSelectedImageIds(new Set(images.map((im) => im.id)))
+    82→    82→    setSelectImagesOpen(true)
+    83→    83→  }
+    84→    84→
+    85→    85→  const confirmSelectAndExport = async () => {
+    86→    86→    setSelectImagesOpen(false)
+    87→    87→    if (selectedImageIds.size === 0) {
+    88→    88→      toast.error("请至少选择一张图片")
+    89→    89→      return
+    90→    90→    }
+    91→    91→    const targets = images.filter((im) => selectedImageIds.has(im.id))
+    92→    92→    if (pendingAction) {
+    93→    93→      await runExport(pendingAction, targets)
+    94→    94→    }
+    95→    95→    setPendingAction(null)
+    96→    96→  }
+    97→    97→
+    98→    98→  const toggleImage = (id: string) => {
+    99→    99→    setSelectedImageIds((prev) => {
+   100→   100→      const next = new Set(prev)
+   101→   101→      if (next.has(id)) next.delete(id)
+   102→   102→      else next.add(id)
+   103→   103→      return next
+   104→   104→    })
+   105→   105→  }
+   106→   106→
+   107→   107→  const selectAll = () => setSelectedImageIds(new Set(images.map((im) => im.id)))
+   108→   108→  const selectNone = () => setSelectedImageIds(new Set())
+   109→   109→
+   110→   110→  const runExport = async (
+   111→   111→    action: "pdf" | "word" | "excel" | "markdown" | "json" | "boxes" | "cropped",
+   112→   112→    targets: typeof images
+   113→   113→  ) => {
+   114→   114→    if (targets.length === 0) {
+   115→   115→      toast.error("没有图片可导出")
+   116→   116→      return
+   117→   117→    }
+   118→   118→    // 选项仅对 pdf/word/cropped 有意义；markdown/excel/json 始终含批改文本；boxes 始终含图
+   119→   119→    if (action === "json") return exportJson(targets)
+   120→   120→    if (action === "markdown") return exportMarkdown(targets)
+   121→   121→    if (action === "excel") return exportExcel(targets)
+   122→   122→    if (action === "boxes") return exportWithBoxes(targets, true)
+   123→   123→    if (action === "cropped") return exportCroppedImages(targets, optIncludeSubImages)
+   124→   124→    if (action === "pdf") return exportPDF(targets)
+   125→   125→    if (action === "word") return exportWord(targets)
+   126→   126→  }
+   127→   127→
+   128→   128→  // ===== JSON =====
+   129→   129→  const exportJson = (targets: typeof images) => {
+   130→   130→    const data = buildExportData(targets)
+   131→   131→    const jsonStr = JSON.stringify(data, null, 2)
+   132→   132→    const blob = new Blob(["\uFEFF" + jsonStr], { type: "application/json;charset=utf-8" })
+   133→   133→    downloadBlob(blob, `questions-${Date.now()}.json`)
+   134→   134→    toast.success(`已导出 ${targets.length} 张图的 JSON`)
+   135→   135→  }
+   136→   136→
+   137→   137→  // ===== Markdown =====
+   138→   138→  const exportMarkdown = (targets: typeof images) => {
+   139→   139→    const lines: string[] = ["# 题目识别结果", ""]
+   140→   140→    targets.forEach((img, i) => {
+   141→   141→      lines.push(`## 图片 ${i + 1}：${img.name}`)
+   142→   142→      lines.push("")
+   143→   143→      const passages = img.questions.filter((q) => q.kind === "passage")
+   144→   144→      passages.forEach((p) => {
+   145→   145→        lines.push(`### 阅读材料`)
+   146→   146→        lines.push("")
+   147→   147→        lines.push(p.content || "（无内容）")
+   148→   148→        lines.push("")
+   149→   149→      })
+   150→   150→      if (img.questions.length === 0) {
+   151→   151→        lines.push("_未识别到题目_")
+   152→   152→      } else {
+   153→   153→        img.questions
+   154→   154→          .filter((q) => q.kind !== "passage")
+   155→   155→          .forEach((q, qi) => {
+   156→   156→            const num = q.number ? `（${q.number}）` : `（${qi + 1}）`
+   157→   157→            lines.push(`### 第 ${qi + 1} 题 ${num}`)
+   158→   158→            lines.push("")
+   159→   159→            if (q.kind === "passage_question" && q.passageId) {
+   160→   160→              const passage = img.questions.find((x) => x.id === q.passageId)
+   161→   161→              if (passage) {
+   162→   162→                lines.push("> **阅读材料：**")
+   163→   163→                lines.push(">")
+   164→   164→                lines.push(`> ${passage.content.replace(/\n/g, "\n> ")}`)
+   165→   165→                lines.push("")
+   166→   166→              }
+   167→   167→            }
+   168→   168→            lines.push(q.content || "_（无内容）_")
+   169→   169→            lines.push("")
+   170→   170→            if (q.images.length > 0) {
+   171→   171→              lines.push(`> 配图 ${q.images.length} 张`)
+   172→   172→              lines.push("")
+   173→   173→            }
+   174→   174→            if (q.grading) {
+   175→   175→              lines.push(`**批改结果：** ${q.grading.correct === true ? "✓ 正确" : q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"}`)
+   176→   176→              if (q.grading.correctAnswer) {
+   177→   177→                lines.push(`**正确答案：** ${q.grading.correctAnswer}`)
+   178→   178→              }
+   179→   179→              lines.push("")
+   180→   180→              lines.push("**解析：**")
+   181→   181→              lines.push("")
+   182→   182→              lines.push(q.grading.explanation)
+   183→   183→              lines.push("")
+   184→   184→            }
+   185→   185→          })
+   186→   186→      }
+   187→   187→      lines.push("")
+   188→   188→    })
+   189→   189→    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/markdown;charset=utf-8" })
+   190→   190→    downloadBlob(blob, `questions-${Date.now()}.md`)
+   191→   191→    toast.success(`已导出 ${targets.length} 张图的 Markdown`)
+   192→   192→  }
+   193→   193→
+   194→   194→  // ===== 复制全部题文 =====
+   195→   195→  const copyAll = async () => {
+   196→   196→    const text = targetImages
+   197→   197→      .flatMap((img, i) => {
+   198→   198→        const passages = img.questions.filter((q) => q.kind === "passage")
+   199→   199→        const out: string[] = []
+   200→   200→        if (passages.length > 0) {
+   201→   201→          out.push(`==== 图片 ${i + 1} 阅读材料 ====`)
+   202→   202→          passages.forEach((p) => out.push(p.content))
+   203→   203→          out.push("")
+   204→   204→        }
+   205→   205→        out.push(`==== 图片 ${i + 1}：${img.name} ====`)
+   206→   206→        img.questions
+   207→   207→          .filter((q) => q.kind !== "passage")
+   208→   208→          .forEach((q) => {
+   209→   209→            out.push(`\n第 ${q.number || "?"} 题`)
+   210→   210→            out.push(q.content || "(无内容)")
+   211→   211→            if (q.grading) {
+   212→   212→              out.push(`批改：${q.grading.correct === true ? "正确" : q.grading.correct === "partial" ? "部分正确" : "错误"}`)
+   213→   213→              if (q.grading.correctAnswer) out.push(`正确答案：${q.grading.correctAnswer}`)
+   214→   214→              out.push(`解析：${q.grading.explanation}`)
+   215→   215→            }
+   216→   216→            out.push("")
+   217→   217→          })
+   218→   218→        return out
+   219→   219→      })
+   220→   220→      .join("\n")
+   221→   221→    try {
+   222→   222→      await navigator.clipboard.writeText(text)
+   223→   223→      toast.success("已复制到剪贴板")
+   224→   224→    } catch {
+   225→   225→      toast.error("复制失败")
+   226→   226→    }
+   227→   227→  }
+   228→   228→
+   229→   229→  // ===== 题目截图 + 配图 =====
+   230→   230→  const exportCroppedImages = async (targets: typeof images, includeSubImages: boolean) => {
+   231→   231→    if (targets.length === 0) {
+   232→   232→      toast.error("没有图片可导出")
+   233→   233→      return
+   234→   234→    }
+   235→   235→    setBusy(true)
+   236→   236→    toast.info("开始导出题目截图…")
+   237→   237→    let count = 0
+   238→   238→    for (let i = 0; i < targets.length; i++) {
+   239→   239→      const img = targets[i]
+   240→   240→      for (let j = 0; j < img.questions.length; j++) {
+   241→   241→        const q = img.questions[j]
+   242→   242→        if (q.kind === "passage") continue
+   243→   243→        try {
+   244→   244→          const dataUrl = await cropToDataUrl(img, q.bbox, 1600, true)
+   245→   245→          const withLabel = await addLabelWatermark(dataUrl, q.number, q.grading?.correct)
+   246→   246→          const blob = dataUrlToBlob(withLabel)
+   247→   247→          downloadBlob(blob, `img${i + 1}_q${j + 1}_${q.number || "no-num"}.png`)
+   248→   248→          count += 1
+   249→   249→          if (includeSubImages) {
+   250→   250→            for (let k = 0; k < q.images.length; k++) {
+   251→   251→              const si = q.images[k]
+   252→   252→              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 800, true))
+   253→   253→              if (subDataUrl) {
+   254→   254→                const subBlob = dataUrlToBlob(subDataUrl)
+   255→   255→                downloadBlob(subBlob, `img${i + 1}_q${j + 1}_sub${k + 1}.png`)
+   256→   256→                count += 1
+   257→   257→              }
+   258→   258→            }
+   259→   259→          }
+   260→   260→          await new Promise((r) => setTimeout(r, 200))
+   261→   261→        } catch (e) {
+   262→   262→          console.error(e)
+   263→   263→        }
+   264→   264→      }
+   265→   265→    }
+   266→   266→    setBusy(false)
+   267→   267→    toast.success(`已导出 ${count} 张图片`)
+   268→   268→  }
+   269→   269→
+   270→   270→  // ===== 整张带框图 =====
+   271→   271→  const exportWithBoxes = async (targets: typeof images, showGradingColor: boolean) => {
+   272→   272→    if (targets.length === 0) {
+   273→   273→      toast.error("没有图片可导出")
+   274→   274→      return
+   275→   275→    }
+   276→   276→    setBusy(true)
+   277→   277→    let count = 0
+   278→   278→    for (let i = 0; i < targets.length; i++) {
+   279→   279→      try {
+   280→   280→        const dataUrl = await renderImageWithBoxes(targets[i], {
+   281→   281→          showLabels: true,
+   282→   282→          boxColor: "#10b981",
+   283→   283→          selectedColor: "#e11d48",
+   284→   284→          showGradingColor: showGradingColor,
+   285→   285→        })
+   286→   286→        const blob = dataUrlToBlob(dataUrl)
+   287→   287→        downloadBlob(blob, `img${i + 1}_with_boxes.png`)
+   288→   288→        count += 1
+   289→   289→        await new Promise((r) => setTimeout(r, 200))
+   290→   290→      } catch (e) {
+   291→   291→        console.error(e)
+   292→   292→      }
+   293→   293→    }
+   294→   294→    setBusy(false)
+   295→   295→    toast.success(`已导出 ${count} 张带框图`)
+   296→   296→  }
+   297→   297→
+   298→   298→  // ===== Word =====
+   299→   299→  const exportWord = async (targets: typeof images) => {
+   300→   300→    if (targets.length === 0) {
+   301→   301→      toast.error("没有图片")
+   302→   302→      return
+   303→   303→    }
+   304→   304→    setBusy(true)
+   305→   305→    try {
+   306→   306→      const docx = await import("docx")
+   307→   307→      const { Document, Packer, Paragraph, TextRun, ImageRun, HeadingLevel, AlignmentType } = docx
+   308→   308→      const children: any[] = []
+   309→   309→      for (let i = 0; i < targets.length; i++) {
+   310→   310→        const img = targets[i]
+   311→   311→        children.push(
+   312→   312→          new Paragraph({
+   313→   313→            text: `图片 ${i + 1}：${img.name}`,
+   314→   314→            heading: HeadingLevel.HEADING_1,
+   315→   315→          })
+   316→   316→        )
+   317→   317→        const passages = img.questions.filter((q) => q.kind === "passage")
+   318→   318→        passages.forEach((p) => {
+   319→   319→          children.push(
+   320→   320→            new Paragraph({
+   321→   321→              heading: HeadingLevel.HEADING_2,
+   322→   322→              children: [new TextRun({ text: "阅读材料", bold: true })],
+   323→   323→            })
+   324→   324→          )
+   325→   325→          p.content.split("\n").forEach((line) =>
+   326→   326→            children.push(new Paragraph({ text: line || " " }))
+   327→   327→          )
+   328→   328→        })
+   329→   329→        const questions = img.questions.filter((q) => q.kind !== "passage")
+   330→   330→        for (let qi = 0; qi < questions.length; qi++) {
+   331→   331→          const q = questions[qi]
+   332→   332→          const numText = q.number ? `第 ${q.number} 题` : `第 ${qi + 1} 题`
+   333→   333→          children.push(
+   334→   334→            new Paragraph({
+   335→   335→              heading: HeadingLevel.HEADING_2,
+   336→   336→              children: [new TextRun({ text: numText, bold: true })],
+   337→   337→            })
+   338→   338→          )
+   339→   339→          if (q.kind === "passage_question" && q.passageId) {
+   340→   340→            children.push(new Paragraph({ text: "（阅读材料见上）", italics: true }))
+   341→   341→          }
+   342→   342→          q.content.split("\n").forEach((line) =>
+   343→   343→            children.push(new Paragraph({ text: line || " " }))
+   344→   344→          )
+   345→   345→          // 题目截图（可选）
+   346→   346→          if (optIncludeImage) {
+   347→   347→          try {
+   348→   348→            const dataUrl = await cropToDataUrl(img, q.bbox, 800, true)
+   349→   349→            const base64 = dataUrl.split(",")[1]
+   350→   350→            children.push(
+   351→   351→              new Paragraph({
+   352→   352→                alignment: AlignmentType.CENTER,
+   353→   353→                children: [
+   354→   354→                  new ImageRun({
+   355→   355→                    data: Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
+   356→   356→                    transformation: { width: 480, height: 180 },
+   357→   357→                  }),
+   358→   358→                ],
+   359→   359→              })
+   360→   360→            )
+   361→   361→          } catch (e) {
+   362→   362→            console.error(e)
+   363→   363→          }
+   364→   364→          }
+   365→   365→          // 配图（可选）
+   366→   366→          if (optIncludeSubImages) {
+   367→   367→          for (const si of q.images) {
+   368→   368→            try {
+   369→   369→              const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600, true))
+   370→   370→              if (subDataUrl) {
+   371→   371→                const base64 = subDataUrl.split(",")[1]
+   372→   372→                children.push(
+   373→   373→                  new Paragraph({
+   374→   374→                    alignment: AlignmentType.CENTER,
+   375→   375→                    children: [
+   376→   376→                      new ImageRun({
+   377→   377→                        data: Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
+   378→   378→                        transformation: { width: 280, height: 200 },
+   379→   379→                      }),
+   380→   380→                    ],
+   381→   381→                  })
+   382→   382→                )
+   383→   383→                if (si.caption) {
+   384→   384→                  children.push(new Paragraph({
+   385→   385→                    alignment: AlignmentType.CENTER,
+   386→   386→                    children: [new TextRun({ text: si.caption, italics: true, size: 18 })],
+   387→   387→                  }))
+   388→   388→                }
+   389→   389→              }
+   390→   390→            } catch (e) {
+   391→   391→              console.error(e)
+   392→   392→            }
+   393→   393→          }
+   394→   394→          }
+   395→   395→          // 批改（可选）
+   396→   396→          if (optIncludeGrading && q.grading) {
+   397→   397→            const statusText =
+   398→   398→              q.grading.correct === true ? "✓ 正确" :
+   399→   399→              q.grading.correct === "partial" ? "△ 部分正确" : "✗ 错误"
+   400→   400→            children.push(
+   401→   401→              new Paragraph({
+   402→   402→                children: [
+   403→   403→                  new TextRun({
+   404→   404→                    text: `批改结果：${statusText}`,
+   405→   405→                    bold: true,
+   406→   406→                    color: q.grading.correct === true ? "16A34A" : q.grading.correct === "partial" ? "D97706" : "DC2626",
+   407→   407→                  }),
+   408→   408→                ],
+   409→   409→              })
+   410→   410→            )
+   411→   411→            if (q.grading.correctAnswer) {
+   412→   412→              children.push(new Paragraph({ text: `正确答案：${q.grading.correctAnswer}` }))
+   413→   413→            }
+   414→   414→            children.push(new Paragraph({ text: "解析：", bold: true }))
+   415→   415→            q.grading.explanation.split("\n").forEach((line) =>
+   416→   416→              children.push(new Paragraph({ text: line || " " }))
+   417→   417→            )
+   418→   418→          }
+   419→   419→        }
+   420→   420→      }
+   421→   421→      const doc = new Document({ sections: [{ children }] })
+   422→   422→      const blob = await Packer.toBlob(doc)
+   423→   423→      downloadBlob(blob, `questions-${Date.now()}.docx`)
+   424→   424→      toast.success(`已导出 ${targets.length} 张图的 Word 文档`)
+   425→   425→    } catch (e) {
+   426→   426→      toast.error(`Word 导出失败：${(e as Error).message}`)
+   427→   427→    } finally {
+   428→   428→      setBusy(false)
+   429→   429→    }
+   430→   430→  }
+   431→   431→
+   432→   432→  // ===== PDF：用 canvas 渲染中文，彻底解决乱码 =====
+   433→   433→  const exportPDF = async (targets: typeof images) => {
+   434→   434→    if (targets.length === 0) {
+   435→   435→      toast.error("没有图片")
+   436→   436→      return
+   437→   437→    }
+   438→   438→    setBusy(true)
+   439→   439→    try {
+   440→   440→      const { jsPDF } = await import("jspdf")
+   441→   441→      const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true })
+   442→   442→      const pageW = pdf.internal.pageSize.getWidth()
+   443→   443→      const pageH = pdf.internal.pageSize.getHeight()
+   444→   444→      const margin = 24
+   445→   445→
+   446→   446→      for (let i = 0; i < targets.length; i++) {
+   447→   447→        const img = targets[i]
+   448→   448→        // 1. 第一页（可选）：原图 + 框 + 题号标签
+   449→   449→        if (optIncludeImage) {
+   450→   450→          const { renderImageWithBoxes } = await import("@/lib/merge-images")
+   451→   451→          const boxDataUrl = await renderImageWithBoxes(img, {
+   452→   452→            showLabels: true,
+   453→   453→            showGradingColor: optIncludeGrading,
+   454→   454→          })
+   455→   455→          const boxImg = await loadImageLocal(boxDataUrl)
+   456→   456→          const drawW = pageW - margin * 2
+   457→   457→          const drawH = (boxImg.naturalHeight / boxImg.naturalWidth) * drawW
+   458→   458→          const finalDrawH = Math.min(drawH, pageH - margin * 2)
+   459→   459→          const finalDrawW = (finalDrawH / drawH) * drawW
+   460→   460→          if (i > 0) pdf.addPage()
+   461→   461→          pdf.addImage(boxDataUrl, "JPEG", margin, margin, finalDrawW, finalDrawH)
+   462→   462→        }
+   463→   463→
+   464→   464→        // 2. 后续页：每道题渲染为图片（含文字 + 截图 + 配图 + 批改）
+   465→   465→        const questions = img.questions.filter((q) => q.kind !== "passage")
+   466→   466→        for (let qi = 0; qi < questions.length; qi++) {
+   467→   467→          const q = questions[qi]
+   468→   468→          // 找关联的阅读材料
+   469→   469→          let passageContent: string | undefined
+   470→   470→          if (q.kind === "passage_question" && q.passageId) {
+   471→   471→            const passage = img.questions.find((x) => x.id === q.passageId)
+   472→   472→            if (passage) passageContent = passage.content
+   473→   473→          }
+   474→   474→          try {
+   475→   475→            const { dataUrl: qDataUrl } = await renderQuestionToCanvas(img, q, passageContent, {
+   476→   476→              showGrading: optIncludeGrading,
+   477→   477→              showSubImages: optIncludeSubImages,
+   478→   478→              showQuestionImage: optIncludeImage,
+   479→   479→            })
+   480→   480→            if (qDataUrl) {
+   481→   481→              const qImg = await loadImageLocal(qDataUrl)
+   482→   482→              const qDrawW = pageW - margin * 2
+   483→   483→              const qDrawH = (qImg.naturalHeight / qImg.naturalWidth) * qDrawW
+   484→   484→              // 如果一页放不下，分块
+   485→   485→              if (qDrawH <= pageH - margin * 2) {
+   486→   486→                pdf.addPage()
+   487→   487→                pdf.addImage(qDataUrl, "JPEG", margin, margin, qDrawW, qDrawH)
+   488→   488→              } else {
+   489→   489→                // 分块画
+   490→   490→                const sliceCount = Math.ceil(qDrawH / (pageH - margin * 2))
+   491→   491→                const slicePxH = Math.floor(qImg.naturalHeight / sliceCount)
+   492→   492→                for (let s = 0; s < sliceCount; s++) {
+   493→   493→                  const sy = s * slicePxH
+   494→   494→                  const sh = s === sliceCount - 1 ? qImg.naturalHeight - sy : slicePxH
+   495→   495→                  const c2 = document.createElement("canvas")
+   496→   496→                  c2.width = qImg.naturalWidth
+   497→   497→                  c2.height = sh
+   498→   498→                  const c2ctx = c2.getContext("2d")
+   499→   499→                  if (!c2ctx) break
+   500→   500→                  c2ctx.drawImage(qImg, 0, sy, qImg.naturalWidth, sh, 0, 0, qImg.naturalWidth, sh)
+   501→   501→                  const sliceDataUrl = c2.toDataURL("image/jpeg", 0.85)
+   502→   502→                  const sliceDrawH = (sh / qImg.naturalWidth) * qDrawW
+   503→   503→                  pdf.addPage()
+   504→   504→                  pdf.addImage(sliceDataUrl, "JPEG", margin, margin, qDrawW, sliceDrawH)
+   505→   505→                }
+   506→   506→              }
+   507→   507→            }
+   508→   508→          } catch (e) {
+   509→   509→            console.error(`PDF 渲染题目 ${qi} 失败`, e)
+   510→   510→          }
+   511→   511→        }
+   512→   512→      }
+   513→   513→      pdf.save(`questions-${Date.now()}.pdf`)
+   514→   514→      toast.success(`已导出 ${targets.length} 张图的 PDF`)
+   515→   515→    } catch (e) {
+   516→   516→      toast.error(`PDF 导出失败：${(e as Error).message}`)
+   517→   517→    } finally {
+   518→   518→      setBusy(false)
+   519→   519→    }
+   520→   520→  }
+   521→   521→
+   522→   522→  // ===== Excel =====
+   523→   523→  const exportExcel = async (targets: typeof images) => {
+   524→   524→    if (targets.length === 0) {
+   525→   525→      toast.error("没有图片")
+   526→   526→      return
+   527→   527→    }
+   528→   528→    setBusy(true)
+   529→   529→    try {
+   530→   530→      const XLSX = await import("xlsx")
+   531→   531→      const rows: any[] = []
+   532→   532→      targets.forEach((img, i) => {
+   533→   533→        if (img.questions.length === 0) {
+   534→   534→          rows.push({
+   535→   535→            "图片序号": i + 1,
+   536→   536→            "图片名": img.name,
+   537→   537→            "来源": img.source === "camera" ? "拍照" : img.source === "merged" ? "合并" : "上传",
+   538→   538→            "题号": "",
+   539→   539→            "类型": "",
+   540→   540→            "题目内容": "（未识别到题目）",
+   541→   541→            "配图数": 0,
+   542→   542→            "批改结果": "",
+   543→   543→            "正确答案": "",
+   544→   544→            "解析": "",
+   545→   545→          })
+   546→   546→        } else {
+   547→   547→          img.questions.forEach((q, qi) => {
+   548→   548→            const gradingStatus =
+   549→   549→              q.grading?.correct === true ? "正确" :
+   550→   550→              q.grading?.correct === "partial" ? "部分正确" :
+   551→   551→              q.grading?.correct === false ? "错误" : ""
+   552→   552→            rows.push({
+   553→   553→              "图片序号": i + 1,
+   554→   554→              "图片名": img.name,
+   555→   555→              "来源": img.source === "camera" ? "拍照" : img.source === "merged" ? "合并" : "上传",
+   556→   556→              "题号": q.number || String(qi + 1),
+   557→   557→              "类型": q.kind === "passage" ? "阅读材料" : q.kind === "passage_question" ? "阅读理解题" : "普通题",
+   558→   558→              "题目内容": q.content,
+   559→   559→              "配图数": q.images.length,
+   560→   560→              "批改结果": gradingStatus,
+   561→   561→              "正确答案": q.grading?.correctAnswer || "",
+   562→   562→              "解析": q.grading?.explanation || "",
+   563→   563→            })
+   564→   564→          })
+   565→   565→        }
+   566→   566→      })
+   567→   567→      const ws = XLSX.utils.json_to_sheet(rows)
+   568→   568→      ws["!cols"] = [
+   569→   569→        { wch: 8 }, { wch: 24 }, { wch: 8 }, { wch: 10 },
+   570→   570→        { wch: 12 }, { wch: 50 }, { wch: 8 }, { wch: 10 },
+   571→   571→        { wch: 30 }, { wch: 60 },
+   572→   572→      ]
+   573→   573→      const wb = XLSX.utils.book_new()
+   574→   574→      XLSX.utils.book_append_sheet(wb, ws, "题目")
+   575→   575→      XLSX.writeFile(wb, `questions-${Date.now()}.xlsx`)
+   576→   576→      toast.success(`已导出 ${targets.length} 张图的 Excel`)
+   577→   577→    } catch (e) {
+   578→   578→      toast.error(`Excel 导出失败：${(e as Error).message}`)
+   579→   579→    } finally {
+   580→   580→      setBusy(false)
+   581→   581→    }
+   582→   582→  }
+   583→   583→
+   584→   584→  const printAll = () => window.print()
+   585→   585→
+   586→   586→  const label = currentImageOnly ? "当页导出" : "导出"
+   587→   587→
+   588→   588→  return (
+   589→   589→    <>
+   590→   590→      <DropdownMenu>
+   591→   591→        <DropdownMenuTrigger asChild>
+   592→   592→          <Button variant="outline" size="sm" disabled={busy} className="shrink-0">
+   593→   593→            {busy ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+   594→   594→            <span className="ml-1">{label}</span>
+   595→   595→          </Button>
+   596→   596→        </DropdownMenuTrigger>
+   597→   597→        <DropdownMenuContent align="end" className="w-60 max-h-[80vh] overflow-y-auto">
+   598→   598→          <DropdownMenuLabel>
+   599→   599→            {currentImageOnly ? "导出当前图片" : `导出所有图片（${images.length}）`}
+   600→   600→          </DropdownMenuLabel>
+   601→   601→          <DropdownMenuSeparator />
+   602→   602→          <DropdownMenuSub>
+   603→   603→            <DropdownMenuSubTrigger>
+   604→   604→              <ImageIcon className="size-4 mr-2" /> 整张带框图
+   605→   605→            </DropdownMenuSubTrigger>
+   606→   606→            <DropdownMenuSubContent>
+   607→   607→              <DropdownMenuItem onClick={() => openSelectImages("boxes")}>
+   608→   608→                所有题目框同色
+   609→   609→              </DropdownMenuItem>
+   610→   610→              <DropdownMenuItem onClick={() => exportWithBoxes(targetImages, true)}>
+   611→   611→                按批改结果分色（错题红色）
+   612→   612→              </DropdownMenuItem>
+   613→   613→            </DropdownMenuSubContent>
+   614→   614→          </DropdownMenuSub>
+   615→   615→          <DropdownMenuSub>
+   616→   616→            <DropdownMenuSubTrigger>
+   617→   617→              <Images className="size-4 mr-2" /> 题目截图
+   618→   618→            </DropdownMenuSubTrigger>
+   619→   619→            <DropdownMenuSubContent>
+   620→   620→              <DropdownMenuItem onClick={() => openSelectImages("cropped")}>
+   621→   621→                仅题目截图
+   622→   622→              </DropdownMenuItem>
+   623→   623→              <DropdownMenuItem onClick={() => exportCroppedImages(targetImages, true)}>
+   624→   624→                题目截图 + 配图（高清）
+   625→   625→              </DropdownMenuItem>
+   626→   626→            </DropdownMenuSubContent>
+   627→   627→          </DropdownMenuSub>
+   628→   628→          <DropdownMenuItem onClick={() => openSelectImages("word")}>
+   629→   629→            <FileType className="size-4 mr-2" /> Word 文档
+   630→   630→          </DropdownMenuItem>
+   631→   631→          <DropdownMenuItem onClick={() => openSelectImages("pdf")}>
+   632→   632→            <FileText className="size-4 mr-2" /> PDF 文档
+   633→   633→          </DropdownMenuItem>
+   634→   634→          <DropdownMenuItem onClick={() => openSelectImages("excel")}>
+   635→   635→            <FileSpreadsheet className="size-4 mr-2" /> Excel 表格
+   636→   636→          </DropdownMenuItem>
+   637→   637→          <DropdownMenuSeparator />
+   638→   638→          <DropdownMenuItem onClick={() => openSelectImages("json")}>
+   639→   639→            <FileJson className="size-4 mr-2" /> JSON 数据
+   640→   640→          </DropdownMenuItem>
+   641→   641→          <DropdownMenuItem onClick={() => openSelectImages("markdown")}>
+   642→   642→            <FileText className="size-4 mr-2" /> Markdown（含公式）
+   643→   643→          </DropdownMenuItem>
+   644→   644→          <DropdownMenuSeparator />
+   645→   645→          <DropdownMenuItem onClick={copyAll}>
+   646→   646→            <Copy className="size-4 mr-2" /> 复制全部题文
+   647→   647→          </DropdownMenuItem>
+   648→   648→          <DropdownMenuItem onClick={printAll}>
+   649→   649→            <Printer className="size-4 mr-2" /> 打印
+   650→   650→          </DropdownMenuItem>
+   651→   651→        </DropdownMenuContent>
+   652→   652→      </DropdownMenu>
+   653→   653→
+   654→   654→      {/* 选择图片对话框 */}
+   655→   655→      <Dialog open={selectImagesOpen} onOpenChange={setSelectImagesOpen}>
+   656→   656→        <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
+   657→   657→          <DialogHeader>
+   658→   658→            <DialogTitle>导出设置</DialogTitle>
+   659→   659→            <DialogDescription>
+   660→   660→              选择要导出的图片（已选 {selectedImageIds.size} / {images.length} 张）和导出内容
+   661→   661→            </DialogDescription>
+   662→   662→          </DialogHeader>
+   663→   663→          <div className="space-y-3">
+   664→   664→            {/* 导出选项 */}
+   665→   665→            <div className="rounded-md border p-3 space-y-2">
+   666→   666→              <div className="text-xs font-medium text-muted-foreground">导出内容（PDF / Word / 题目截图）</div>
+   667→   667→              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeImage(!optIncludeImage)}>
+   668→   668→                <Checkbox checked={optIncludeImage} onCheckedChange={(v) => setOptIncludeImage(!!v)} />
+   669→   669→                <span className="text-sm">包含题目原图截图</span>
+   670→   670→              </label>
+   671→   671→              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeSubImages(!optIncludeSubImages)}>
+   672→   672→                <Checkbox checked={optIncludeSubImages} onCheckedChange={(v) => setOptIncludeSubImages(!!v)} />
+   673→   673→                <span className="text-sm">包含题目内配图</span>
+   674→   674→              </label>
+   675→   675→              <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeGrading(!optIncludeGrading)}>
+   676→   676→                <Checkbox checked={optIncludeGrading} onCheckedChange={(v) => setOptIncludeGrading(!!v)} />
+   677→   677→                <span className="text-sm">包含批改结果和解析</span>
+   678→   678→              </label>
+   679→   679→            </div>
+   680→   680→            {/* 选择图片 */}
+   681→   681→            <div className="flex items-center gap-2 text-xs">
+   682→   682→              <span className="text-muted-foreground font-medium">选择图片：</span>
+   683→   683→              <button onClick={selectAll} className="px-2 py-1 rounded hover:bg-accent">全选</button>
+   684→   684→              <button onClick={selectNone} className="px-2 py-1 rounded hover:bg-accent">取消全选</button>
+   685→   685→            </div>
+   686→   686→            <div className="space-y-1 max-h-52 overflow-y-auto">
+   687→   687→              {images.map((im, i) => {
+   688→   688→                const checked = selectedImageIds.has(im.id)
+   689→   689→                return (
+   690→   690→                  <label
+   691→   691→                    key={im.id}
+   692→   692→                    className={`flex items-center gap-2 p-2 rounded border cursor-pointer ${
+   693→   693→                      checked ? "border-rose-500 bg-rose-50 dark:bg-rose-950/30" : "border-border hover:bg-accent"
+   694→   694→                    }`}
+   695→   695→                  >
+   696→   696→                    <Checkbox
+   697→   697→                      checked={checked}
+   698→   698→                      onCheckedChange={() => toggleImage(im.id)}
+   699→   699→                    />
+   700→   700→                    <img src={im.dataUrl} alt="" className="size-10 object-cover rounded shrink-0" />
+   701→   701→                    <div className="flex-1 min-w-0">
+   702→   702→                      <div className="text-xs font-medium truncate">{im.name}</div>
+   703→   703→                      <div className="text-[10px] text-muted-foreground">
+   704→   704→                        {im.questions.length} 题
+   705→   705→                        {im.source === "merged" && " · 合并"}
+   706→   706→                      </div>
+   707→   707→                    </div>
+   708→   708→                  </label>
+   709→   709→                )
+   710→   710→              })}
+   711→   711→            </div>
+   712→   712→          </div>
+   713→   713→          <DialogFooter>
+   714→   714→            <Button variant="outline" onClick={() => setSelectImagesOpen(false)}>取消</Button>
+   715→   715→            <Button onClick={confirmSelectAndExport} className="bg-rose-500 hover:bg-rose-600">
+   716→   716→              导出 {selectedImageIds.size} 张
+   717→   717→            </Button>
+   718→   718→          </DialogFooter>
+   719→   719→        </DialogContent>
+   720→   720→      </Dialog>
+   721→   721→    </>
+   722→   722→  )
+   723→   723→}
+   724→   724→
+   725→   725→async function addLabelWatermark(
+   726→   726→  dataUrl: string,
+   727→   727→  label: string,
+   728→   728→  correct?: boolean | "partial"
+   729→   729→): Promise<string> {
+   730→   730→  const img = await loadImageLocal(dataUrl)
+   731→   731→  const canvas = document.createElement("canvas")
+   732→   732→  canvas.width = img.naturalWidth
+   733→   733→  canvas.height = img.naturalHeight
+   734→   734→  const ctx = canvas.getContext("2d")
+   735→   735→  if (!ctx) return dataUrl
+   736→   736→  ctx.drawImage(img, 0, 0)
+   737→   737→  if (label) {
+   738→   738→    const text = `第 ${label} 题`
+   739→   739→    ctx.font = "bold 24px sans-serif"
+   740→   740→    const tw = ctx.measureText(text).width
+   741→   741→    const bg =
+   742→   742→      correct === false ? "rgba(220, 38, 38, 0.95)" :
+   743→   743→      correct === "partial" ? "rgba(217, 119, 6, 0.95)" :
+   744→   744→      correct === true ? "rgba(22, 163, 74, 0.95)" :
+   745→   745→      "rgba(225, 29, 72, 0.95)"
+   746→   746→    ctx.fillStyle = bg
+   747→   747→    ctx.fillRect(8, 8, tw + 20, 32)
+   748→   748→    ctx.fillStyle = "white"
+   749→   749→    ctx.textBaseline = "middle"
+   750→   750→    ctx.fillText(text, 18, 24)
+   751→   751→  }
+   752→   752→  return canvas.toDataURL("image/png")
+   753→   753→}
+   754→   754→
+   755→   755→function loadImageLocal(dataUrl: string): Promise<HTMLImageElement> {
+   756→   756→  return new Promise((resolve, reject) => {
+   757→   757→    const im = new Image()
+   758→   758→    im.onload = () => resolve(im)
+   759→   759→    im.onerror = reject
+   760→   760→    im.src = dataUrl
+   761→   761→  })
+   762→   762→}
+   763→   763→
+   764→   764→// 防止未使用告警
+   765→   765→void CheckSquare
+   766→   766→void Square
+   767→   767→void renderQuestionToCanvas
+   768→   768→void renderImageFullPage
+   769→   769→

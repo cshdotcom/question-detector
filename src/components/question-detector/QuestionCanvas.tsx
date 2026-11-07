@@ -447,7 +447,7 @@ export function QuestionCanvas() {
           setQuestions(currentImage.id, qs, fresh.detectMethod ?? "ai")
         }
       }
-      toast.success("已去除手写痕迹，题目框位置保持不变")
+      toast.success("已去除手写痕迹，印刷题目已保护（差异兜底）")
     } catch (e) {
       toast.error(`去除手写失败：${(e as Error).message}`)
     } finally {

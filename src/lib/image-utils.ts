@@ -490,16 +490,104 @@ export async function removeHandwritingFromImage(
   }
 
   // 结果缩放回发送时的尺寸：题目框、配图框的相对坐标保持有效
-  const cleaned = await loadImage(data.dataUrl)
-  const out = document.createElement("canvas")
-  out.width = cw
-  out.height = ch
-  const octx = out.getContext("2d")
+  // 关键：与原图做差异检测兜底，只接受 AI 把像素"擦白"的部分（手写被擦除），
+  //       拒绝 AI "改写/添加"的部分（印刷题目被破坏），还原为原图，避免题目出问题。
+  const merged = await mergeHandwritingResult(src, data.dataUrl, cw, ch)
+  return merged
+}
+
+/** AI 去手写后的差异检测兜底：
+ *  - 只接受 AI 把原图像素"擦白"的修改（手写答案/批改被擦除）
+ *  - 拒绝 AI "改写"或"凭空添加"的修改（印刷题目被重写、变模糊、移位）
+ *  - 这样即使 z-ai image-edit API 重绘整图，印刷题目也保持原样不破坏。
+ *
+ *  策略（按像素灰度比较，原图 vs cleaned）：
+ *  - 原图白 + cleaned 白   → 白色（背景）
+ *  - 原图白 + cleaned 内容 → 还原原图白色（拒绝 AI 凭空添加）
+ *  - 原图内容 + cleaned 白 → 接受擦除（手写/批改被擦掉，符合预期）
+ *  - 原图内容 + cleaned 内容但显著更白 → 接受 cleaned（部分擦除，如铅笔淡痕）
+ *  - 原图内容 + cleaned 内容差异不大或反向变化 → 还原原图（拒绝改写）
+ */
+export async function mergeHandwritingResult(
+  originalSrc: string,
+  cleanedSrc: string,
+  sendW: number,
+  sendH: number
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const origImg = await loadImage(originalSrc)
+  const cleanedImg = await loadImage(cleanedSrc)
+
+  // 原图缩到 sendW × sendH
+  const origCanvas = document.createElement("canvas")
+  origCanvas.width = sendW
+  origCanvas.height = sendH
+  const octx = origCanvas.getContext("2d", { willReadFrequently: true })
   if (!octx) throw new Error("画布初始化失败")
   octx.fillStyle = "#ffffff"
-  octx.fillRect(0, 0, cw, ch)
-  octx.imageSmoothingEnabled = true
+  octx.fillRect(0, 0, sendW, sendH)
   octx.imageSmoothingQuality = "high"
-  octx.drawImage(cleaned, 0, 0, cw, ch)
-  return { dataUrl: out.toDataURL("image/jpeg", 0.92), width: cw, height: ch }
+  octx.drawImage(origImg, 0, 0, sendW, sendH)
+  const origData = octx.getImageData(0, 0, sendW, sendH)
+
+  // cleaned 缩到 sendW × sendH（API 返回尺寸可能是 1024×1024 等固定档，等比拉伸）
+  const cleanedCanvas = document.createElement("canvas")
+  cleanedCanvas.width = sendW
+  cleanedCanvas.height = sendH
+  const cctx = cleanedCanvas.getContext("2d", { willReadFrequently: true })
+  if (!cctx) throw new Error("画布初始化失败")
+  cctx.fillStyle = "#ffffff"
+  cctx.fillRect(0, 0, sendW, sendH)
+  cctx.imageSmoothingQuality = "high"
+  cctx.drawImage(cleanedImg, 0, 0, sendW, sendH)
+  const cleanedData = cctx.getImageData(0, 0, sendW, sendH)
+
+  const ob = origData.data
+  const cb = cleanedData.data
+  const out = new Uint8ClampedArray(ob.length)
+
+  // 灰度阈值：>WHITE_T 视为白纸背景
+  const WHITE_T = 200
+  // 显著更白阈值：原图灰度 - cleaned 灰度 > ERASE_T 视为"被擦白"
+  const ERASE_T = 30
+
+  for (let i = 0; i < ob.length; i += 4) {
+    const oR = ob[i], oG = ob[i + 1], oB = ob[i + 2]
+    const cR = cb[i], cG = cb[i + 1], cB = cb[i + 2]
+    const oGray = (oR * 0.299 + oG * 0.587 + oB * 0.114) | 0
+    const cGray = (cR * 0.299 + cG * 0.587 + cB * 0.114) | 0
+
+    let r: number, g: number, b: number
+    if (oGray > WHITE_T && cGray > WHITE_T) {
+      // 都白色
+      r = 255; g = 255; b = 255
+    } else if (oGray > WHITE_T && cGray <= WHITE_T) {
+      // 原图白 + cleaned 有内容 → AI 凭空添加，拒绝，用原图（白色）
+      r = oR; g = oG; b = oB
+    } else if (oGray <= WHITE_T && cGray > WHITE_T) {
+      // 原图有内容 + cleaned 白 → AI 擦除，接受
+      r = 255; g = 255; b = 255
+    } else {
+      // 都有内容，看是否"显著更白"
+      const diff = oGray - cGray
+      if (diff > ERASE_T) {
+        // cleaned 显著更白 → 接受 cleaned（部分擦除/淡化）
+        r = cR; g = cG; b = cB
+      } else {
+        // 没有显著擦除效果，或 AI 改写了 → 还原原图
+        r = oR; g = oG; b = oB
+      }
+    }
+    out[i] = r
+    out[i + 1] = g
+    out[i + 2] = b
+    out[i + 3] = 255
+  }
+
+  const outCanvas = document.createElement("canvas")
+  outCanvas.width = sendW
+  outCanvas.height = sendH
+  const outCtx = outCanvas.getContext("2d")
+  if (!outCtx) throw new Error("画布初始化失败")
+  outCtx.putImageData(new ImageData(out, sendW, sendH), 0, 0)
+  return { dataUrl: outCanvas.toDataURL("image/jpeg", 0.92), width: sendW, height: sendH }
 }

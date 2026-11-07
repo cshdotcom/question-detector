@@ -37,14 +37,23 @@ function pickSize(w: number, h: number): string {
   return best
 }
 
-const PROMPT = `这是一张试卷/作业/教材的照片。请把图中所有手写和批改痕迹全部去除，包括：
-1. 手写答案、演算过程（铅笔、钢笔字迹）
-2. 红笔/蓝笔批改：勾号、叉号、圈画、下划线、波浪线、批语
-3. 手写的分数、等级（如 "92分"、"Score"、"A" 等老师评分）
-把这些区域恢复成干净的空白纸面（保持纸张底色一致）。
-必须完整保留所有印刷内容：印刷的题号、题目文字、选项、图表、表格、插图、印刷分隔线和页眉页脚，位置、大小、字体、版面布局完全不变，清晰可读。
-注意区分：印刷的黑色横线/表格线要保留，手写或红笔画的线要去掉。
-Remove ALL handwritten marks (answers, corrections, checkmarks, circles, underlines, handwritten scores) and restore clean blank paper. Keep all printed text, numbers, diagrams, tables and the layout exactly unchanged.`
+const PROMPT = `Task: ERASE handwritten marks ONLY. NEVER regenerate, rewrite, blur, move, or restyle any printed text.
+
+STRICT RULES (highest priority):
+1. ABSOLUTELY DO NOT modify printed text. Every printed character (Chinese, English, digits, math symbols, LaTeX) must remain byte-for-byte identical in position, size, font, sharpness, and color.
+2. ABSOLUTELY DO NOT regenerate the page. Do NOT redraw, re-typeset, or "improve" the layout. The output must be a pixel-level edit of the input, not a re-rendering.
+3. ABSOLUTELY DO NOT add anything new. No new text, no new lines, no new diagrams that were not in the input.
+4. ONLY erase these marks by replacing them with the surrounding paper background color (white or off-white):
+   - Handwritten answers, calculations, drafts (pencil, pen, ballpoint — any color)
+   - Teacher corrections: ✓, ✗, circles, underlines, wavy lines, arrows
+   - Handwritten scores, grades (e.g. "92", "A", "Score")
+5. If you are UNSURE whether a mark is handwritten or printed, KEEP IT UNCHANGED. False positives that erase printed text are catastrophic; false negatives that keep some handwriting are acceptable.
+6. Keep all printed lines (rules in exercise books, table borders, dividers, header/footer lines) intact. Only erase lines drawn by hand.
+
+What to remove: handwritten answers, pencil/pen calculations, red/blue correction marks, checkmarks, X marks, circles, handwritten scores.
+What to keep 100% unchanged: printed question numbers, printed question text, printed options, printed diagrams, printed tables, printed figures, printed math formulas, page numbers.
+
+Output: the same image with ONLY handwritten pixels replaced by paper-color background. Everything else must be pixel-identical to the input.`
 
 export async function POST(req: Request) {
   try {

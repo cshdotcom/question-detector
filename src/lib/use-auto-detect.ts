@@ -28,7 +28,11 @@ export function useAutoDetect() {
   useEffect(() => {
     // 初始化：把当前所有图片标记为已知（不重复识别）
     const initState = useDetectorStore.getState()
-    initState.images.forEach((im) => knownIdsRef.current.add(im.id))
+    initState.images.forEach((im) => {
+      knownIdsRef.current.add(im.id)
+      // 已经识别过的图片也标记为已完成
+      if (im.detected) processingRef.current.add(im.id)
+    })
 
     const unsub = useDetectorStore.subscribe((state) => {
       if (!useDetectorStore.getState().autoDetect) return
@@ -38,6 +42,8 @@ export function useAutoDetect() {
         knownIdsRef.current.add(im.id)
         if (im.name.startsWith("[待合并]")) return false
         if (processingRef.current.has(im.id)) return false
+        // 已经识别过的图片（从 IndexedDB 恢复的）不重新识别
+        if (im.detected) return false
         return true
       })
       for (const im of newImages) {

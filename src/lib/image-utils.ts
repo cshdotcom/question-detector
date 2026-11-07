@@ -446,8 +446,16 @@ export async function removeColoredMarksFromImage(
   return { dataUrl: canvas.toDataURL("image/jpeg", 0.94), width: w, height: h }
 }
 
-/** AI 去除手写：把调整(旋转/滤镜)烘焙进图 → 发送到后端图像编辑 API →
- *  结果等比缩放回发送尺寸（保证题目框坐标不乱） */
+/** AI 去除手写：用 VLM（文字模型）识别手写笔迹区域 → 本地按 bbox 做洋葱皮局部擦除
+ *  不再使用绘图模型（images.generations.edit），因为绘图模型会破坏印刷题目。
+ *  VLM 文字模型擅长区分印刷 vs 手写，配合本地擦除可保证印刷内容字节级一致。
+ *
+ *  流程：
+ *  1. 把调整(旋转/滤镜)烘焙进图，缩到 ≤1440 上传
+ *  2. POST /api/remove-handwriting，VLM 返回手写区域 bbox 列表
+ *  3. 本地对每个 bbox 做擦除：把手写像素用周围纸张色填充（onion-peel inpainting）
+ *  4. 印刷题目像素完全不动
+ */
 export async function removeHandwritingFromImage(
   img: ImageItem
 ): Promise<{ dataUrl: string; width: number; height: number }> {
@@ -457,7 +465,7 @@ export async function removeHandwritingFromImage(
   let src = img.dataUrl
   if (hasAdjustments) src = await renderImageWithAdjustments(img)
 
-  // 缩小到 ≤1440（编辑 API 的最大输出档），降低上传体积与耗时
+  // 缩小到 ≤1440 上传，降低体积与耗时
   const image = await loadImage(src)
   const MAX = 1440
   const scale = Math.max(image.naturalWidth, image.naturalHeight) > MAX
@@ -476,118 +484,133 @@ export async function removeHandwritingFromImage(
   sctx.drawImage(image, 0, 0, cw, ch)
   const sendDataUrl = sendCanvas.toDataURL("image/jpeg", 0.9)
 
+  // 调用 VLM 识别手写区域（config 由前端传入，浏览器 localStorage 配置优先）
+  const { useDetectorStore } = await import("./store")
+  const aiConfig = useDetectorStore.getState().aiConfig
+
   const resp = await fetch("/api/remove-handwriting", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ image: sendDataUrl, width: cw, height: ch }),
+    body: JSON.stringify({ image: sendDataUrl, width: cw, height: ch, config: aiConfig }),
   })
   const data = await resp.json().catch(() => ({}))
   if (!resp.ok || !data?.ok) {
     throw new Error(data?.error || `HTTP ${resp.status}`)
   }
-  if (typeof data.dataUrl !== "string" || !data.dataUrl.startsWith("data:")) {
-    throw new Error("图像编辑 API 返回异常")
+  const boxes: { x: number; y: number; width: number; height: number }[] = data.boxes ?? []
+  if (boxes.length === 0) {
+    // VLM 没检测到手写，原样返回（不破坏图片）
+    return { dataUrl: sendCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch }
   }
 
-  // 结果缩放回发送时的尺寸：题目框、配图框的相对坐标保持有效
-  // 关键：与原图做差异检测兜底，只接受 AI 把像素"擦白"的部分（手写被擦除），
-  //       拒绝 AI "改写/添加"的部分（印刷题目被破坏），还原为原图，避免题目出问题。
-  const merged = await mergeHandwritingResult(src, data.dataUrl, cw, ch)
-  return merged
-}
-
-/** AI 去手写后的差异检测兜底：
- *  - 只接受 AI 把原图像素"擦白"的修改（手写答案/批改被擦除）
- *  - 拒绝 AI "改写"或"凭空添加"的修改（印刷题目被重写、变模糊、移位）
- *  - 这样即使 z-ai image-edit API 重绘整图，印刷题目也保持原样不破坏。
- *
- *  策略（按像素灰度比较，原图 vs cleaned）：
- *  - 原图白 + cleaned 白   → 白色（背景）
- *  - 原图白 + cleaned 内容 → 还原原图白色（拒绝 AI 凭空添加）
- *  - 原图内容 + cleaned 白 → 接受擦除（手写/批改被擦掉，符合预期）
- *  - 原图内容 + cleaned 内容但显著更白 → 接受 cleaned（部分擦除，如铅笔淡痕）
- *  - 原图内容 + cleaned 内容差异不大或反向变化 → 还原原图（拒绝改写）
- */
-export async function mergeHandwritingResult(
-  originalSrc: string,
-  cleanedSrc: string,
-  sendW: number,
-  sendH: number
-): Promise<{ dataUrl: string; width: number; height: number }> {
-  const origImg = await loadImage(originalSrc)
-  const cleanedImg = await loadImage(cleanedSrc)
-
-  // 原图缩到 sendW × sendH
-  const origCanvas = document.createElement("canvas")
-  origCanvas.width = sendW
-  origCanvas.height = sendH
-  const octx = origCanvas.getContext("2d", { willReadFrequently: true })
+  // 本地按 bbox 做洋葱皮局部擦除
+  const outCanvas = document.createElement("canvas")
+  outCanvas.width = cw
+  outCanvas.height = ch
+  const octx = outCanvas.getContext("2d", { willReadFrequently: true })
   if (!octx) throw new Error("画布初始化失败")
   octx.fillStyle = "#ffffff"
-  octx.fillRect(0, 0, sendW, sendH)
-  octx.imageSmoothingQuality = "high"
-  octx.drawImage(origImg, 0, 0, sendW, sendH)
-  const origData = octx.getImageData(0, 0, sendW, sendH)
+  octx.fillRect(0, 0, cw, ch)
+  octx.drawImage(image, 0, 0, cw, ch)
 
-  // cleaned 缩到 sendW × sendH（API 返回尺寸可能是 1024×1024 等固定档，等比拉伸）
-  const cleanedCanvas = document.createElement("canvas")
-  cleanedCanvas.width = sendW
-  cleanedCanvas.height = sendH
-  const cctx = cleanedCanvas.getContext("2d", { willReadFrequently: true })
-  if (!cctx) throw new Error("画布初始化失败")
-  cctx.fillStyle = "#ffffff"
-  cctx.fillRect(0, 0, sendW, sendH)
-  cctx.imageSmoothingQuality = "high"
-  cctx.drawImage(cleanedImg, 0, 0, sendW, sendH)
-  const cleanedData = cctx.getImageData(0, 0, sendW, sendH)
+  const imageData = octx.getImageData(0, 0, cw, ch)
+  eraseRegions(imageData, boxes)
+  octx.putImageData(imageData, 0, 0)
 
-  const ob = origData.data
-  const cb = cleanedData.data
-  const out = new Uint8ClampedArray(ob.length)
+  return { dataUrl: outCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch }
+}
 
-  // 灰度阈值：>WHITE_T 视为白纸背景
-  const WHITE_T = 200
-  // 显著更白阈值：原图灰度 - cleaned 灰度 > ERASE_T 视为"被擦白"
-  const ERASE_T = 30
+/** 按 bbox 列表在 ImageData 上做洋葱皮局部擦除：
+ *  - 每个 bbox 内的像素被视为"待擦除"
+ *  - 用 8 邻域 onion-peel BFS 从边界向内逐层用有效邻居均值填充
+ *  - 印刷题目像素完全不动 */
+function eraseRegions(
+  imageData: ImageData,
+  boxes: { x: number; y: number; width: number; height: number }[]
+) {
+  const w = imageData.width
+  const h = imageData.height
+  const data = imageData.data
+  const n = w * h
 
-  for (let i = 0; i < ob.length; i += 4) {
-    const oR = ob[i], oG = ob[i + 1], oB = ob[i + 2]
-    const cR = cb[i], cG = cb[i + 1], cB = cb[i + 2]
-    const oGray = (oR * 0.299 + oG * 0.587 + oB * 0.114) | 0
-    const cGray = (cR * 0.299 + cG * 0.587 + cB * 0.114) | 0
-
-    let r: number, g: number, b: number
-    if (oGray > WHITE_T && cGray > WHITE_T) {
-      // 都白色
-      r = 255; g = 255; b = 255
-    } else if (oGray > WHITE_T && cGray <= WHITE_T) {
-      // 原图白 + cleaned 有内容 → AI 凭空添加，拒绝，用原图（白色）
-      r = oR; g = oG; b = oB
-    } else if (oGray <= WHITE_T && cGray > WHITE_T) {
-      // 原图有内容 + cleaned 白 → AI 擦除，接受
-      r = 255; g = 255; b = 255
-    } else {
-      // 都有内容，看是否"显著更白"
-      const diff = oGray - cGray
-      if (diff > ERASE_T) {
-        // cleaned 显著更白 → 接受 cleaned（部分擦除/淡化）
-        r = cR; g = cG; b = cB
-      } else {
-        // 没有显著擦除效果，或 AI 改写了 → 还原原图
-        r = oR; g = oG; b = oB
+  // 1. 构建擦除掩膜（待擦除像素 = 1）
+  const mask = new Uint8Array(n)
+  for (const b of boxes) {
+    const x0 = Math.max(0, Math.floor(b.x * w))
+    const y0 = Math.max(0, Math.floor(b.y * h))
+    const x1 = Math.min(w, Math.ceil((b.x + b.width) * w))
+    const y1 = Math.min(h, Math.ceil((b.y + b.height) * h))
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        mask[y * w + x] = 1
       }
     }
-    out[i] = r
-    out[i + 1] = g
-    out[i + 2] = b
-    out[i + 3] = 255
   }
 
-  const outCanvas = document.createElement("canvas")
-  outCanvas.width = sendW
-  outCanvas.height = sendH
-  const outCtx = outCanvas.getContext("2d")
-  if (!outCtx) throw new Error("画布初始化失败")
-  outCtx.putImageData(new ImageData(out, sendW, sendH), 0, 0)
-  return { dataUrl: outCanvas.toDataURL("image/jpeg", 0.92), width: sendW, height: sendH }
+  // 2. 掩膜膨胀 1px，确保边缘笔迹也被覆盖
+  const dilated = new Uint8Array(n)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (mask[i]) { dilated[i] = 1; continue }
+      if ((x > 0 && mask[i - 1]) || (x < w - 1 && mask[i + 1]) ||
+          (y > 0 && mask[i - w]) || (y < h - 1 && mask[i + w])) {
+        dilated[i] = 1
+      }
+    }
+  }
+
+  // 3. 洋葱皮 BFS：从掩膜边界向内逐层用有效邻居均值填充
+  const filled = new Uint8Array(n)
+  for (let i = 0; i < n; i++) if (!dilated[i]) filled[i] = 1
+
+  const queue: number[] = []
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (!dilated[i]) continue
+      if (
+        (x > 0 && filled[i - 1]) ||
+        (x < w - 1 && filled[i + 1]) ||
+        (y > 0 && filled[i - w]) ||
+        (y < h - 1 && filled[i + w])
+      ) {
+        queue.push(i)
+      }
+    }
+  }
+
+  let head = 0
+  while (head < queue.length) {
+    const i = queue[head++]
+    if (filled[i]) continue
+    let rs = 0, gs = 0, bs = 0, cnt = 0
+    const x = i % w
+    const y = (i / w) | 0
+    if (x > 0 && filled[i - 1]) { rs += data[(i - 1) * 4]; gs += data[(i - 1) * 4 + 1]; bs += data[(i - 1) * 4 + 2]; cnt++ }
+    if (x < w - 1 && filled[i + 1]) { rs += data[(i + 1) * 4]; gs += data[(i + 1) * 4 + 1]; bs += data[(i + 1) * 4 + 2]; cnt++ }
+    if (y > 0 && filled[i - w]) { rs += data[(i - w) * 4]; gs += data[(i - w) * 4 + 1]; bs += data[(i - w) * 4 + 2]; cnt++ }
+    if (y < h - 1 && filled[i + w]) { rs += data[(i + w) * 4]; gs += data[(i + w) * 4 + 1]; bs += data[(i + w) * 4 + 2]; cnt++ }
+    if (cnt > 0) {
+      data[i * 4] = rs / cnt
+      data[i * 4 + 1] = gs / cnt
+      data[i * 4 + 2] = bs / cnt
+      data[i * 4 + 3] = 255
+      filled[i] = 1
+      if (x > 0 && dilated[i - 1] && !filled[i - 1]) queue.push(i - 1)
+      if (x < w - 1 && dilated[i + 1] && !filled[i + 1]) queue.push(i + 1)
+      if (y > 0 && dilated[i - w] && !filled[i - w]) queue.push(i - w)
+      if (y < h - 1 && dilated[i + w] && !filled[i + w]) queue.push(i + w)
+    }
+  }
+
+  // 4. 兜底：没填上的（孤立手写大块）填白色
+  for (let i = 0; i < n; i++) {
+    if (dilated[i] && !filled[i]) {
+      data[i * 4] = 255
+      data[i * 4 + 1] = 255
+      data[i * 4 + 2] = 255
+      data[i * 4 + 3] = 255
+    }
+  }
 }

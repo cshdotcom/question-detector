@@ -51,9 +51,13 @@ export default function Home() {
   useAutoDetect()
   const isMobile = useIsMobile()
   const setAIConfig = useDetectorStore((s) => s.setAIConfig)
+  const hydrate = useDetectorStore((s) => s.hydrate)
+  const hydrated = useDetectorStore((s) => s.hydrated)
   useEffect(() => {
     setAIConfig(loadAIConfig())
-  }, [setAIConfig])
+    // 启动时从 IndexedDB 恢复已保存的图片
+    void hydrate()
+  }, [setAIConfig, hydrate])
   const [cameraOpen, setCameraOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)

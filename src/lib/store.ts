@@ -5,6 +5,7 @@ import { uid } from "./utils"
 import type { ImageItem, Question, BBox, ImageAdjustments, GradingResult, AIProviderConfig } from "./types"
 import { DEFAULT_ADJUSTMENTS } from "./types"
 import { saveAIConfig, DEFAULT_AI_CONFIG } from "./ai-config"
+import { saveImage, deleteImage, deleteImages, clearAllImages, loadAllImages } from "./image-db"
 
 interface HistoryEntry {
   images: ImageItem[]
@@ -18,12 +19,16 @@ interface DetectorState {
   selectedQuestionId: string | null
   // 跨页合并的多选
   selectedImageIds: string[]
+  // 画廊多选模式（用于批量删除）
+  gallerySelectMode: boolean
 
   // 全局开关
   autoDetect: boolean
   sidebarOpen: boolean
   rightPanelOpen: boolean
   aiConfig: AIProviderConfig
+  // 是否已从 IndexedDB 恢复过
+  hydrated: boolean
 
   // 历史
   past: HistoryEntry[]
@@ -39,10 +44,15 @@ interface DetectorState {
   toggleSidebar: () => void
   toggleRightPanel: () => void
   setAIConfig: (cfg: AIProviderConfig) => void
+  setGallerySelectMode: (v: boolean) => void
+
+  // 持久化
+  hydrate: () => Promise<void>
 
   // 图片管理
   addImage: (img: Omit<ImageItem, "id" | "questions" | "detected" | "detecting" | "createdAt" | "adjustments">) => string
   removeImage: (id: string) => void
+  removeImages: (ids: string[]) => void
   clearAll: () => void
   setCurrentImage: (id: string | null) => void
   toggleSelectImage: (id: string) => void
@@ -101,10 +111,12 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   currentImageId: null,
   selectedQuestionId: null,
   selectedImageIds: [],
+  gallerySelectMode: false,
   autoDetect: true,
   sidebarOpen: true,
   rightPanelOpen: true,
   aiConfig: { ...DEFAULT_AI_CONFIG },
+  hydrated: false,
 
   past: [],
   future: [],
@@ -151,6 +163,29 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
     saveAIConfig(cfg)
     set({ aiConfig: cfg })
   },
+  setGallerySelectMode: (v) => set({ gallerySelectMode: v, selectedImageIds: [] }),
+
+  // 从 IndexedDB 恢复图片
+  hydrate: async () => {
+    if (get().hydrated) return
+    try {
+      const saved = await loadAllImages()
+      if (saved.length > 0) {
+        // 把 detecting 重置为 false（避免上次中断留下的脏状态）
+        const restored = saved.map((im) => ({ ...im, detecting: false }))
+        set({
+          images: restored,
+          currentImageId: restored[0]?.id ?? null,
+          hydrated: true,
+        })
+      } else {
+        set({ hydrated: true })
+      }
+    } catch (e) {
+      console.warn("[hydrate] failed:", e)
+      set({ hydrated: true })
+    }
+  },
 
   addImage: (img) => {
     const id = uid("img")
@@ -175,10 +210,12 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         future: [],
       }
     })
+    // 持久化到 IndexedDB
+    void saveImage(item)
     return id
   },
 
-  removeImage: (id) =>
+  removeImage: (id) => {
     get().commit((s) => {
       const images = s.images.filter((x) => x.id !== id)
       const currentImageId = s.currentImageId === id ? images[0]?.id ?? null : s.currentImageId
@@ -188,10 +225,32 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         selectedQuestionId: null,
         selectedImageIds: s.selectedImageIds.filter((x) => x !== id),
       }
-    }),
+    })
+    void deleteImage(id)
+  },
 
-  clearAll: () =>
-    get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null, selectedImageIds: [] })),
+  removeImages: (ids) => {
+    if (!ids || ids.length === 0) return
+    const idSet = new Set(ids)
+    get().commit((s) => {
+      const images = s.images.filter((x) => !idSet.has(x.id))
+      const currentImageId = s.currentImageId && idSet.has(s.currentImageId)
+        ? images[0]?.id ?? null
+        : s.currentImageId
+      return {
+        images,
+        currentImageId,
+        selectedQuestionId: null,
+        selectedImageIds: s.selectedImageIds.filter((x) => !idSet.has(x)),
+      }
+    })
+    void deleteImages(ids)
+  },
+
+  clearAll: () => {
+    get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null, selectedImageIds: [] }))
+    void clearAllImages()
+  },
 
   setCurrentImage: (id) => set({ currentImageId: id, selectedQuestionId: null }),
 
@@ -204,7 +263,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
 
   clearSelection: () => set({ selectedImageIds: [] }),
 
-  setQuestions: (imageId, questions, method) =>
+  setQuestions: (imageId, questions, method) => {
     set((s) => {
       const snap = snapshot(s)
       const newPast = [...s.past, snap]
@@ -218,7 +277,11 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         past: newPast,
         future: [],
       }
-    }),
+    })
+    // 持久化到 IndexedDB
+    const updated = get().images.find((x) => x.id === imageId)
+    if (updated) void saveImage(updated)
+  },
 
   addQuestion: (imageId, q) => {
     const qid = uid("q")
@@ -246,7 +309,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
     return qid
   },
 
-  updateQuestion: (imageId, qid, patch) =>
+  updateQuestion: (imageId, qid, patch) => {
     set((s) => {
       const snap = snapshot(s)
       const newPast = [...s.past, snap]
@@ -263,7 +326,9 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         past: newPast,
         future: [],
       }
-    }),
+    })
+    persistImageDebounced(imageId)
+  },
 
   updateQuestionLive: (imageId, qid, patch) =>
     set((s) => ({
@@ -285,13 +350,15 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       return { past: newPast, future: [] }
     }),
 
-  removeQuestion: (imageId, qid) =>
+  removeQuestion: (imageId, qid) => {
     get().commit((s) => ({
       images: s.images.map((x) =>
         x.id === imageId ? { ...x, questions: x.questions.filter((q) => q.id !== qid) } : x
       ),
       selectedQuestionId: s.selectedQuestionId === qid ? null : s.selectedQuestionId,
-    })),
+    }))
+    persistImageDebounced(imageId, 200)
+  },
 
   selectQuestion: (qid) => set({ selectedQuestionId: qid }),
 
@@ -317,9 +384,10 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
           : x
       ),
     }))
+    persistImageDebounced(imageId, 200)
   },
 
-  removeSubImage: (imageId, qid, subId) =>
+  removeSubImage: (imageId, qid, subId) => {
     get().commit((s) => ({
       images: s.images.map((x) =>
         x.id === imageId
@@ -331,7 +399,9 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
             }
           : x
       ),
-    })),
+    }))
+    persistImageDebounced(imageId, 200)
+  },
 
   setSubImageData: (imageId, qid, subId, dataUrl) =>
     set((s) => ({
@@ -352,7 +422,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       ),
     })),
 
-  setGrading: (imageId, qid, grading) =>
+  setGrading: (imageId, qid, grading) => {
     set((s) => ({
       images: s.images.map((x) =>
         x.id === imageId
@@ -362,7 +432,9 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
             }
           : x
       ),
-    })),
+    }))
+    persistImageDebounced(imageId, 300)
+  },
 
   setDetecting: (imageId, v) =>
     set((s) => ({
@@ -388,10 +460,14 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       ),
     })),
 
-  replaceImageData: (imageId, data) =>
+  replaceImageData: (imageId, data) => {
     get().commit((s) => ({
       images: s.images.map((x) => (x.id === imageId ? { ...x, ...data } : x)),
-    })),
+    }))
+    // 持久化到 IndexedDB
+    const updated = get().images.find((x) => x.id === imageId)
+    if (updated) void saveImage(updated)
+  },
 
   getCurrentImage: () => {
     const { images, currentImageId } = get()
@@ -406,4 +482,17 @@ export function sanitizeBBox(b: Partial<BBox>): BBox {
   const w = Math.max(0.02, Math.min(1 - x, b.width ?? 0.1))
   const h = Math.max(0.02, Math.min(1 - y, b.height ?? 0.1))
   return { x, y, width: w, height: h }
+}
+
+/** 防抖持久化某张图片到 IndexedDB（用于拖拽/编辑等高频更新场景） */
+const persistDebounce = new Map<string, ReturnType<typeof setTimeout>>()
+export function persistImageDebounced(imageId: string, delay = 800) {
+  const existing = persistDebounce.get(imageId)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(() => {
+    persistDebounce.delete(imageId)
+    const img = useDetectorStore.getState().images.find((x) => x.id === imageId)
+    if (img) void saveImage(img)
+  }, delay)
+  persistDebounce.set(imageId, timer)
 }

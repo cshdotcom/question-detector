@@ -16,6 +16,7 @@ export interface TutorMessageMeta {
   visualBoard?: { html?: string; width?: number; height?: number; caption?: string }
   visualization?: { type?: string; svg?: string; caption?: string }
   suggestedTools?: { tool: string; reason: string }[]
+  visualQuestion?: { prompt: string; type: "draw" | "image" | "either"; hint?: string }
 }
 
 export interface ChatCallbacks {
@@ -90,6 +91,17 @@ export async function sendTutorChat(opts: SendChatOptions, cb: ChatCallbacks): P
       // 用户主动中断，不算错误
       return
     }
-    cb.onError?.((e as Error).message)
+    let msg = (e as Error).message
+    // 友好错误提示：502 Bad Gateway / 网关错误
+    if (msg.includes("502") || msg.includes("Bad Gateway") || msg.includes("<html>")) {
+      msg = "AI 服务暂时不可用（502 网关错误），请稍后重试或检查 AI 配置"
+    } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+      msg = "网络连接失败，请检查网络后重试"
+    } else if (msg.includes("401") || msg.includes("Unauthorized")) {
+      msg = "AI 配置错误：API Key 无效或已过期，请检查 AI 设置"
+    } else if (msg.includes("429") || msg.includes("rate limit")) {
+      msg = "AI 调用频率过高，请稍后重试"
+    }
+    cb.onError?.(msg)
   }
 }

@@ -19,7 +19,7 @@ interface TTSPlayerProps {
   className?: string
 }
 
-type TTSEngine = "browser" | "ai"
+type TTSEngine = "browser" | "ai" | "thirdparty"
 
 const STORAGE_KEY = "tutor-tts-config"
 
@@ -30,6 +30,10 @@ interface TTSConfig {
   aiVoice: string  // tongtong / chuichui / xiaochen / jam / kazi / douji / luodo
   aiSpeed: number
   autoPlay: boolean
+  // 第三方 TTS
+  thirdpartyTTSUrl: string
+  thirdpartyTTSKey: string
+  thirdpartyTTSModel: string
 }
 
 const AI_VOICES = [
@@ -44,14 +48,7 @@ const AI_VOICES = [
 
 function loadConfig(): TTSConfig {
   if (typeof window === "undefined") {
-    return {
-      engine: "browser",
-      browserVoice: "",
-      browserRate: 1.0,
-      aiVoice: "tongtong",
-      aiSpeed: 1.0,
-      autoPlay: false,
-    }
+    return defaultConfig()
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -68,6 +65,9 @@ function defaultConfig(): TTSConfig {
     aiVoice: "tongtong",
     aiSpeed: 1.0,
     autoPlay: false,
+    thirdpartyTTSUrl: "",
+    thirdpartyTTSKey: "",
+    thirdpartyTTSModel: "",
   }
 }
 
@@ -204,13 +204,55 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
     }
   }, [text, config.aiVoice, config.aiSpeed, messageId, stopAll])
 
+  // 第三方 TTS（OpenAI 兼容 /audio/speech）
+  const playThirdparty = useCallback(async () => {
+    if (!text) return
+    if (!config.thirdpartyTTSUrl || !config.thirdpartyTTSKey) {
+      toast.error("请先在 AI 设置中配置第三方 TTS API")
+      return
+    }
+    stopAll()
+    setLoadingEngine("thirdparty")
+    try {
+      const resp = await fetch(config.thirdpartyTTSUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.thirdpartyTTSKey}`,
+        },
+        body: JSON.stringify({
+          model: config.thirdpartyTTSModel || "tts-1",
+          input: stripInlineTags(text).slice(0, 4000),
+          voice: "alloy",
+          response_format: "mp3",
+        }),
+      })
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "")
+        throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 200)}`)
+      }
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const audio = new Audio(url)
+      audioRef.current = audio
+      audio.onplay = () => { setLoadingEngine(null); setPlayingEngine("thirdparty") }
+      audio.onended = () => { setPlayingEngine(null); URL.revokeObjectURL(url) }
+      audio.onerror = () => { setLoadingEngine(null); setPlayingEngine(null); toast.error("第三方音频播放失败") }
+      await audio.play()
+    } catch (e) {
+      setLoadingEngine(null)
+      toast.error(`第三方 TTS 失败：${(e as Error).message}`)
+    }
+  }, [text, config.thirdpartyTTSUrl, config.thirdpartyTTSKey, config.thirdpartyTTSModel, stopAll])
+
   const togglePlay = (engine: TTSEngine) => {
     if (playingEngine === engine) {
       stopAll()
     } else {
       stopAll()
       if (engine === "browser") playBrowser()
-      else playAI()
+      else if (engine === "ai") playAI()
+      else playThirdparty()
     }
   }
 
@@ -228,7 +270,7 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
         size="sm"
         className={`h-7 px-2 gap-1 ${playingEngine === "browser" ? "bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400" : ""}`}
         onClick={() => togglePlay("browser")}
-        disabled={loadingEngine === "ai"}
+        disabled={loadingEngine !== null && loadingEngine !== "browser"}
         title="浏览器 TTS（免费即时）"
       >
         {loadingEngine === "browser" ? (
@@ -247,7 +289,7 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
         size="sm"
         className={`h-7 px-2 gap-1 ${playingEngine === "ai" ? "bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-400" : ""}`}
         onClick={() => togglePlay("ai")}
-        disabled={loadingEngine === "browser"}
+        disabled={loadingEngine !== null && loadingEngine !== "ai"}
         title="AI TTS（z-ai-web-dev-sdk，音质更好）"
       >
         {loadingEngine === "ai" ? (
@@ -259,6 +301,27 @@ export function TTSPlayer({ text, messageId, className }: TTSPlayerProps) {
         )}
         <span className="text-xs">AI</span>
       </Button>
+
+      {/* 第三方 TTS（仅在配置时显示） */}
+      {config.thirdpartyTTSUrl && config.thirdpartyTTSKey && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className={`h-7 px-2 gap-1 ${playingEngine === "thirdparty" ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400" : ""}`}
+          onClick={() => togglePlay("thirdparty")}
+          disabled={loadingEngine !== null && loadingEngine !== "thirdparty"}
+          title="第三方 TTS（OpenAI 兼容）"
+        >
+          {loadingEngine === "thirdparty" ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : playingEngine === "thirdparty" ? (
+            <Square className="size-3.5" />
+          ) : (
+            <Volume2 className="size-3.5" />
+          )}
+          <span className="text-xs">第三方</span>
+        </Button>
+      )}
 
       {/* 设置 */}
       <Popover>

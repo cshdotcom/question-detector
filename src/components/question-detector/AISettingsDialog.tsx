@@ -13,18 +13,26 @@ import { useDetectorStore } from "@/lib/store"
 import type { AIProviderConfig } from "@/lib/types"
 
 interface TTSConfig {
-  engine: "browser" | "ai"
+  engine: "browser" | "ai" | "thirdparty"
   browserVoice: string
   browserRate: number
   aiVoice: string
   aiSpeed: number
   autoPlay: boolean
+  // 第三方 TTS
+  thirdpartyTTSUrl: string
+  thirdpartyTTSKey: string
+  thirdpartyTTSModel: string
 }
 
 interface ASRConfig {
-  engine: "browser" | "ai"
+  engine: "browser" | "ai" | "thirdparty"
   browserLang: string
   autoAppend: boolean
+  // 第三方 ASR
+  thirdpartyASRUrl: string
+  thirdpartyASRKey: string
+  thirdpartyASRModel: string
 }
 
 const AI_VOICES = [
@@ -49,12 +57,12 @@ const TTS_STORAGE_KEY = "tutor-tts-config"
 const ASR_STORAGE_KEY = "tutor-asr-config"
 
 function loadTTSConfig(): TTSConfig {
-  if (typeof window === "undefined") return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false }
+  if (typeof window === "undefined") return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false, thirdpartyTTSUrl: "", thirdpartyTTSKey: "", thirdpartyTTSModel: "" }
   try {
     const raw = localStorage.getItem(TTS_STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) return { ...{ engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false, thirdpartyTTSUrl: "", thirdpartyTTSKey: "", thirdpartyTTSModel: "" }, ...JSON.parse(raw) }
   } catch {}
-  return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false }
+  return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false, thirdpartyTTSUrl: "", thirdpartyTTSKey: "", thirdpartyTTSModel: "" }
 }
 
 function saveTTSConfig(cfg: TTSConfig) {
@@ -62,12 +70,12 @@ function saveTTSConfig(cfg: TTSConfig) {
 }
 
 function loadASRConfig(): ASRConfig {
-  if (typeof window === "undefined") return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+  if (typeof window === "undefined") return { engine: "ai", browserLang: "zh-CN", autoAppend: true, thirdpartyASRUrl: "", thirdpartyASRKey: "", thirdpartyASRModel: "" }
   try {
     const raw = localStorage.getItem(ASR_STORAGE_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) return { ...{ engine: "ai", browserLang: "zh-CN", autoAppend: true, thirdpartyASRUrl: "", thirdpartyASRKey: "", thirdpartyASRModel: "" }, ...JSON.parse(raw) }
   } catch {}
-  return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+  return { engine: "ai", browserLang: "zh-CN", autoAppend: true, thirdpartyASRUrl: "", thirdpartyASRKey: "", thirdpartyASRModel: "" }
 }
 
 function saveASRConfig(cfg: ASRConfig) {
@@ -183,7 +191,7 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Settings2 className="size-5" /> AI 模型设置
@@ -356,13 +364,19 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
                 onClick={() => updateTTS({ engine: "browser" })}
                 className={`px-3 py-1 rounded-md text-xs ${ttsConfig.engine === "browser" ? "bg-blue-500 text-white" : "bg-muted text-muted-foreground"}`}
               >
-                浏览器 TTS
+                浏览器
               </button>
               <button
                 onClick={() => updateTTS({ engine: "ai" })}
                 className={`px-3 py-1 rounded-md text-xs ${ttsConfig.engine === "ai" ? "bg-violet-500 text-white" : "bg-muted text-muted-foreground"}`}
               >
-                AI TTS
+                AI (z-ai)
+              </button>
+              <button
+                onClick={() => updateTTS({ engine: "thirdparty" })}
+                className={`px-3 py-1 rounded-md text-xs ${ttsConfig.engine === "thirdparty" ? "bg-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                第三方
               </button>
             </div>
           </div>
@@ -412,6 +426,44 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
               <Slider value={[ttsConfig.aiSpeed]} onValueChange={(v) => updateTTS({ aiSpeed: v[0] })} min={0.5} max={2.0} step={0.1} className="flex-1" />
             </div>
           </div>
+
+          {/* 第三方 TTS 配置 */}
+          {ttsConfig.engine === "thirdparty" && (
+            <div className="space-y-2 px-3 py-2 rounded-md bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900">
+              <div className="text-xs font-medium text-muted-foreground">第三方 TTS API（OpenAI 兼容）</div>
+              <div>
+                <Label className="text-xs">API 端点 URL</Label>
+                <Input
+                  value={ttsConfig.thirdpartyTTSUrl}
+                  onChange={(e) => updateTTS({ thirdpartyTTSUrl: e.target.value })}
+                  placeholder="如 https://api.openai.com/v1/audio/speech"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">API Key</Label>
+                <Input
+                  type="password"
+                  value={ttsConfig.thirdpartyTTSKey}
+                  onChange={(e) => updateTTS({ thirdpartyTTSKey: e.target.value })}
+                  placeholder="sk-..."
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">模型</Label>
+                <Input
+                  value={ttsConfig.thirdpartyTTSModel}
+                  onChange={(e) => updateTTS({ thirdpartyTTSModel: e.target.value })}
+                  placeholder="如 tts-1, tts-1-hd"
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="text-xs text-muted-foreground">
+                调用 OpenAI 兼容的 /audio/speech 接口，返回 mp3 音频。
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ASR 语音识别设置 */}
@@ -429,13 +481,19 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
                 onClick={() => updateASR({ engine: "browser" })}
                 className={`px-3 py-1 rounded-md text-xs ${asrConfig.engine === "browser" ? "bg-blue-500 text-white" : "bg-muted text-muted-foreground"}`}
               >
-                浏览器 ASR
+                浏览器
               </button>
               <button
                 onClick={() => updateASR({ engine: "ai" })}
                 className={`px-3 py-1 rounded-md text-xs ${asrConfig.engine === "ai" ? "bg-violet-500 text-white" : "bg-muted text-muted-foreground"}`}
               >
-                AI ASR
+                AI (z-ai)
+              </button>
+              <button
+                onClick={() => updateASR({ engine: "thirdparty" })}
+                className={`px-3 py-1 rounded-md text-xs ${asrConfig.engine === "thirdparty" ? "bg-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                第三方
               </button>
             </div>
           </div>
@@ -444,7 +502,9 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
             <div className="text-xs text-muted-foreground">
               {asrConfig.engine === "browser"
                 ? "浏览器 ASR：免费、实时显示中间结果。需要 Chrome/Edge 浏览器。"
-                : "AI ASR（z-ai-web-dev-sdk）：音质好、识别准，支持中/英/日/韩。需消耗 API 配额。"}
+                : asrConfig.engine === "ai"
+                ? "AI ASR（z-ai-web-dev-sdk）：音质好、识别准，支持中/英/日/韩。需消耗 API 配额。"
+                : "第三方 ASR：调用 OpenAI 兼容的 /audio/transcriptions 接口。"}
             </div>
             {asrConfig.engine === "browser" && (
               <div className="flex items-center gap-2">
@@ -458,6 +518,38 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
                     <option key={l.id} value={l.id}>{l.name}</option>
                   ))}
                 </select>
+              </div>
+            )}
+            {asrConfig.engine === "thirdparty" && (
+              <div className="space-y-2">
+                <div>
+                  <Label className="text-xs">API 端点 URL</Label>
+                  <Input
+                    value={asrConfig.thirdpartyASRUrl}
+                    onChange={(e) => updateASR({ thirdpartyASRUrl: e.target.value })}
+                    placeholder="如 https://api.openai.com/v1/audio/transcriptions"
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">API Key</Label>
+                  <Input
+                    type="password"
+                    value={asrConfig.thirdpartyASRKey}
+                    onChange={(e) => updateASR({ thirdpartyASRKey: e.target.value })}
+                    placeholder="sk-..."
+                    className="h-8 text-xs"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">模型</Label>
+                  <Input
+                    value={asrConfig.thirdpartyASRModel}
+                    onChange={(e) => updateASR({ thirdpartyASRModel: e.target.value })}
+                    placeholder="如 whisper-1"
+                    className="h-8 text-xs"
+                  />
+                </div>
               </div>
             )}
             <div className="flex items-center justify-between">

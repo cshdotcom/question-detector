@@ -16,7 +16,7 @@ interface VoiceInputProps {
   className?: string
 }
 
-type ASREngine = "browser" | "ai"
+type ASREngine = "browser" | "ai" | "thirdparty"
 
 const STORAGE_KEY = "tutor-asr-config"
 
@@ -24,11 +24,15 @@ interface ASRConfig {
   engine: ASREngine
   browserLang: string  // "zh-CN" | "en-US" | ...
   autoAppend: boolean  // true: 追加到现有文本，false: 替换
+  // 第三方 ASR
+  thirdpartyASRUrl: string
+  thirdpartyASRKey: string
+  thirdpartyASRModel: string
 }
 
 function loadConfig(): ASRConfig {
   if (typeof window === "undefined") {
-    return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+    return defaultConfig()
   }
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -38,7 +42,7 @@ function loadConfig(): ASRConfig {
 }
 
 function defaultConfig(): ASRConfig {
-  return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+  return { engine: "ai", browserLang: "zh-CN", autoAppend: true, thirdpartyASRUrl: "", thirdpartyASRKey: "", thirdpartyASRModel: "" }
 }
 
 function saveConfig(cfg: ASRConfig) {
@@ -215,11 +219,75 @@ export function VoiceInput({ onText, className }: VoiceInputProps) {
     }
   }, [config.autoAppend, onText])
 
+  // 第三方 ASR：用 MediaRecorder 录音，发到第三方 API
+  const startThirdpartyASR = useCallback(async () => {
+    if (!config.thirdpartyASRUrl || !config.thirdpartyASRKey) {
+      toast.error("请先在 AI 设置中配置第三方 ASR API")
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
+      audioChunksRef.current = []
+      let mimeType = "audio/webm"
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = "audio/ogg"
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = "audio/wav"
+        }
+      }
+      const mr = new MediaRecorder(stream, { mimeType })
+      mediaRecorderRef.current = mr
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+      mr.onstop = async () => {
+        setRecording(false)
+        setTranscribing(true)
+        try {
+          const blob = new Blob(audioChunksRef.current, { type: mimeType })
+          const formData = new FormData()
+          formData.append("file", blob, "audio.webm")
+          formData.append("model", config.thirdpartyASRModel || "whisper-1")
+          const resp = await fetch(config.thirdpartyASRUrl, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${config.thirdpartyASRKey}` },
+            body: formData,
+          })
+          if (!resp.ok) {
+            const txt = await resp.text().catch(() => "")
+            throw new Error(`HTTP ${resp.status}: ${txt.slice(0, 200)}`)
+          }
+          const data = await resp.json()
+          const text = (data.text || "").trim()
+          if (text) {
+            onText(config.autoAppend ? text + " " : text)
+          } else {
+            toast.info("未识别到语音内容")
+          }
+        } catch (e) {
+          toast.error(`第三方 ASR 失败：${(e as Error).message}`)
+        } finally {
+          setTranscribing(false)
+          if (streamRef.current) {
+            streamRef.current.getTracks().forEach((t) => t.stop())
+            streamRef.current = null
+          }
+        }
+      }
+      mr.start()
+      setRecording(true)
+    } catch (e) {
+      toast.error(`无法访问麦克风：${(e as Error).message}`)
+    }
+  }, [config.thirdpartyASRUrl, config.thirdpartyASRKey, config.thirdpartyASRModel, config.autoAppend, onText])
+
   const start = useCallback(() => {
     if (recording || transcribing) return
     if (config.engine === "browser") startBrowserASR()
-    else startAIASR()
-  }, [recording, transcribing, config.engine, startBrowserASR, startAIASR])
+    else if (config.engine === "ai") startAIASR()
+    else startThirdpartyASR()
+  }, [recording, transcribing, config.engine, startBrowserASR, startAIASR, startThirdpartyASR])
 
   const stop = useCallback(() => {
     if (config.engine === "browser") {

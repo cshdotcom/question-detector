@@ -209,6 +209,9 @@ export async function POST(req: Request, ctx: RouteCtx) {
           if (Array.isArray(parsed.suggestedTools)) {
             meta.suggestedTools = parsed.suggestedTools
           }
+          if (parsed.visualQuestion && typeof parsed.visualQuestion === "object") {
+            meta.visualQuestion = parsed.visualQuestion as { prompt: string; type: "draw" | "image" | "either"; hint?: string }
+          }
         }
         // 追加 assistant 消息
         history.push({

@@ -18,6 +18,7 @@ import {
   ChevronDown,
   Pen,
   Bookmark,
+  CheckCircle2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -728,6 +729,124 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   )
 }
 
+// AI 主动发起的可视化提问面板：学生可用画板/图片回答
+function VisualQuestionPanel({ question }: { question: { prompt: string; type: "draw" | "image" | "either"; hint?: string } }) {
+  const [showWhiteboard, setShowWhiteboard] = useState(false)
+  const [uploadedImage, setUploadedImage] = useState<string>("")
+  const [submitted, setSubmitted] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const onFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const dataUrl = reader.result as string
+      // 缩到 ≤800
+      const img = new Image()
+      img.onload = () => {
+        const MAX = 800
+        const scale = Math.max(img.naturalWidth, img.naturalHeight) > MAX ? MAX / Math.max(img.naturalWidth, img.naturalHeight) : 1
+        const canvas = document.createElement("canvas")
+        canvas.width = Math.round(img.naturalWidth * scale)
+        canvas.height = Math.round(img.naturalHeight * scale)
+        const ctx = canvas.getContext("2d")
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+        setUploadedImage(canvas.toDataURL("image/jpeg", 0.9))
+      }
+      img.src = dataUrl
+    }
+    reader.readAsDataURL(file)
+    e.target.value = ""
+  }
+
+  if (submitted) {
+    return (
+      <div className="mt-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+        <div className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
+          <CheckCircle2 className="size-3.5" />
+          已提交作答，AI 老师会根据你的回答继续讲解
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900">
+      <div className="flex items-start gap-2 mb-2">
+        <Lightbulb className="size-4 text-amber-500 shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="text-xs font-medium text-amber-800 dark:text-amber-200">AI 老师的可视化提问</div>
+          <div className="text-sm mt-0.5">{question.prompt}</div>
+          {question.hint && (
+            <div className="text-xs text-muted-foreground mt-1">💡 {question.hint}</div>
+          )}
+        </div>
+      </div>
+      {/* 作答方式 */}
+      <div className="flex gap-2 flex-wrap">
+        {(question.type === "draw" || question.type === "either") && (
+          <Button size="sm" variant="outline" className="h-8" onClick={() => setShowWhiteboard(true)}>
+            <Pen className="size-3.5 mr-1" /> 用画板作答
+          </Button>
+        )}
+        {(question.type === "image" || question.type === "either") && (
+          <>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onFileSelect} />
+            <Button size="sm" variant="outline" className="h-8" onClick={() => fileRef.current?.click()}>
+              <ImagePlus className="size-3.5 mr-1" /> 拍照/上传图片
+            </Button>
+          </>
+        )}
+      </div>
+      {/* 已上传图片预览 */}
+      {uploadedImage && (
+        <div className="mt-2">
+          <div className="relative inline-block">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={uploadedImage} alt="作答图片" className="max-h-40 rounded border" />
+            <button
+              onClick={() => setUploadedImage("")}
+              className="absolute top-0 right-0 size-5 bg-destructive text-destructive-foreground rounded-bl-md flex items-center justify-center"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+          <div className="mt-1">
+            <Button size="sm" className="h-7" onClick={() => setSubmitted(true)}>
+              提交作答
+            </Button>
+          </div>
+        </div>
+      )}
+      {/* 画板弹窗 */}
+      {showWhiteboard && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col">
+          <header className="flex items-center gap-2 px-3 py-2 border-b shrink-0 bg-background">
+            <Button variant="ghost" size="sm" className="size-8 p-0" onClick={() => setShowWhiteboard(false)}>
+              <ChevronDown className="size-4" />
+            </Button>
+            <div className="text-sm font-semibold">画板作答</div>
+            <Button
+              size="sm"
+              className="ml-auto"
+              onClick={() => { setSubmitted(true); setShowWhiteboard(false) }}
+            >
+              提交作答
+            </Button>
+          </header>
+          <Whiteboard
+            width={1200}
+            height={800}
+            className="flex-1"
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StageIndicator({ stage }: { stage: number }) {
   const stages = [
     { id: 1, name: "提交作答" },
@@ -835,14 +954,19 @@ function MessageBubble({ message, isSolve, onDelete, onFavorite }: { message: Ch
             />
           </div>
         )}
-        {/* 讲题模式 visualBoard（直接渲染） */}
+        {/* 讲题模式 visualBoard（点击展开模态） */}
         {!isUser && message.meta?.visualBoard?.html && (
-          <div className="mt-2 rounded-lg border overflow-hidden">
+          <div className="mt-2">
             <VisualBoardItem
               board={message.meta.visualBoard as VisualBoard}
-              expanded
             />
           </div>
+        )}
+        {/* AI 主动发起的可视化提问：显示画板/图片作答区 */}
+        {!isUser && message.meta?.visualQuestion && (
+          <VisualQuestionPanel
+            question={message.meta.visualQuestion}
+          />
         )}
         {/* TTS */}
         {!isUser && displayContent && (
@@ -894,30 +1018,58 @@ function stripInline(text: string): string {
 function KnowledgeCardItem({ card, onDelete }: { card: KnowledgeCard; onDelete?: () => void }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="group shrink-0 w-64 rounded-lg border bg-card overflow-hidden">
-      <div className="flex items-center">
-        <button onClick={() => setOpen((o) => !o)} className="flex-1 text-left p-2 min-w-0">
-          <div className="text-xs font-medium truncate">{card.title}</div>
-          {card.summary && (
-            <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{card.summary}</div>
-          )}
-        </button>
-        {onDelete && (
-          <button
-            onClick={onDelete}
-            className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
-            title="删除卡片"
-          >
-            <Trash2 className="size-3" />
+    <>
+      <div className="group shrink-0 w-64 rounded-lg border bg-card overflow-hidden">
+        <div className="flex items-center">
+          <button onClick={() => setOpen(true)} className="flex-1 text-left p-2 min-w-0">
+            <div className="text-xs font-medium truncate">{card.title}</div>
+            {card.summary && (
+              <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{card.summary}</div>
+            )}
           </button>
-        )}
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
+              title="删除卡片"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          )}
+        </div>
       </div>
-      {open && card.svg && (
-        <div className="border-t p-1 bg-muted/30 overflow-x-auto">
-          <div dangerouslySetInnerHTML={{ __html: card.svg }} />
+      {/* 模态展示：避免内联展开卡死布局 */}
+      {open && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="bg-card rounded-xl max-w-3xl w-full max-h-[80vh] overflow-auto relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-card border-b px-4 py-2 flex items-center justify-between">
+              <div className="text-sm font-medium truncate">{card.title}</div>
+              <button
+                onClick={() => setOpen(false)}
+                className="size-7 rounded hover:bg-accent flex items-center justify-center"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              {card.summary && (
+                <div className="text-xs text-muted-foreground mb-3">{card.summary}</div>
+              )}
+              <div
+                className="w-full overflow-auto pointer-events-none"
+                dangerouslySetInnerHTML={{ __html: card.svg }}
+              />
+            </div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 
@@ -928,33 +1080,55 @@ function VisualBoardItem({ board, expanded = false, onDelete }: { board: VisualB
     ? `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}body{margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif;background:transparent}</style></head><body>${board.html}</body></html>`
     : ""
   return (
-    <div className="group shrink-0 w-80 rounded-lg border bg-card overflow-hidden">
-      <div className="flex items-center">
-        <button onClick={() => setOpen((o) => !o)} className="flex-1 text-left p-2 min-w-0">
-          <div className="text-xs font-medium truncate">{board.caption || "动态画板"}</div>
-        </button>
-        {onDelete && (
-          <button
-            onClick={onDelete}
-            className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
-            title="删除画板"
-          >
-            <Trash2 className="size-3" />
+    <>
+      <div className="group shrink-0 w-80 rounded-lg border bg-card overflow-hidden">
+        <div className="flex items-center">
+          <button onClick={() => setOpen(true)} className="flex-1 text-left p-2 min-w-0">
+            <div className="text-xs font-medium truncate">{board.caption || "动态画板"}</div>
           </button>
-        )}
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
+              title="删除画板"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          )}
+        </div>
       </div>
+      {/* 模态展示 */}
       {open && fullHtml && (
-        <div className="border-t bg-white">
-          <iframe
-            srcDoc={fullHtml}
-            className="w-full border-0"
-            style={{ height: board.height || 300, maxWidth: board.width || "100%" }}
-            sandbox="allow-scripts"
-            title={board.caption || "画板"}
-          />
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="bg-card rounded-xl max-w-4xl w-full max-h-[85vh] overflow-hidden relative flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="bg-card border-b px-4 py-2 flex items-center justify-between shrink-0">
+              <div className="text-sm font-medium truncate">{board.caption || "动态画板"}</div>
+              <button
+                onClick={() => setOpen(false)}
+                className="size-7 rounded hover:bg-accent flex items-center justify-center shrink-0"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto bg-white">
+              <iframe
+                srcDoc={fullHtml}
+                className="w-full border-0"
+                style={{ height: board.height || 400, maxWidth: board.width || "100%" }}
+                sandbox="allow-scripts"
+                title={board.caption || "画板"}
+              />
+            </div>
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

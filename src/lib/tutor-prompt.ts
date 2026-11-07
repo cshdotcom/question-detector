@@ -227,6 +227,13 @@ ${imagePath ? "题目图片已附在本消息中。" : ""}
 # content 内联标签
 - <b>...</b> <i>...</i> <u>...</u> <br> <code>...</code>
 - <math>x^2 + 1</math> 数学公式（前端 KaTeX 渲染）
+- 绝对不要输出 LaTeX 命令（如 \\frac, \\sqrt, \\times 等），用 unicode 字符代替：
+  分数：a/b 而不是 \\frac{a}{b}
+  根号：√x 而不是 \\sqrt{x}
+  乘号：× 而不是 \\times
+  角度：∠A 而不是 \\angle A
+  平方：x² 而不是 x^{2}
+  等于：= ≤ ≥ ≠ ≈ 直接用 unicode
 
 # 讲解流程
 1. 首次回复：分析题目，给出整体思路 + 第一段讲解 + HTML 画板

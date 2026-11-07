@@ -334,13 +334,21 @@ export default function RecitationPage() {
                   <span key={j}>
                     {part}
                     {j < arr.length - 1 && (
-                      <Input
-                        value={userAnswers[b.blankId] || ""}
-                        onChange={(e) => setUserAnswers((prev) => ({ ...prev, [b.blankId]: e.target.value }))}
-                        disabled={checked}
-                        className="inline-block w-32 h-7 mx-1 text-sm"
-                        placeholder="?"
-                      />
+                      <span className="inline-flex items-center gap-1 mx-1">
+                        <Input
+                          value={userAnswers[b.blankId] || ""}
+                          onChange={(e) => setUserAnswers((prev) => ({ ...prev, [b.blankId]: e.target.value }))}
+                          disabled={checked}
+                          className="inline-block w-28 h-7 text-sm"
+                          placeholder="?"
+                        />
+                        {!checked && (
+                          <VoiceInput
+                            onText={(t) => setUserAnswers((prev) => ({ ...prev, [b.blankId]: ((prev[b.blankId] || "") + t).trim() }))}
+                            className="inline-flex"
+                          />
+                        )}
+                      </span>
                     )}
                   </span>
                 ))}

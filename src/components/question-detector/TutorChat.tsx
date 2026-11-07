@@ -103,6 +103,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   const [autoAudio, setAutoAudio] = useState(false)
   const [audioSpeed, setAudioSpeed] = useState(1.0)
   const [lastError, setLastError] = useState<string | null>(null)
+  const lastErrorRef = useRef<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -457,10 +458,20 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
         setStreamContent("")
         setStreaming(false)
         abortRef.current = null
+        lastErrorRef.current = err
         setLastError(err)
         toast.error(`AI 失败：${err}`, {
-          action: { label: "重试", onClick: () => { setLastError(null); send("", true) } },
+          duration: 8000,
+          action: { label: "重试", onClick: () => { lastErrorRef.current = null; setLastError(null); send("", true) } },
         })
+        // 自动 3 秒后重试（502 通常是临时网关错误）
+        setTimeout(() => {
+          if (lastErrorRef.current === err) {
+            lastErrorRef.current = null
+            setLastError(null)
+            send("", true)
+          }
+        }, 3000)
       },
     })
   }
@@ -1137,10 +1148,53 @@ function MessageBubble({ message, isSolve, onDelete, onFavorite }: { message: Ch
 /** 渲染内联标签（<b> <i> <u> <br> <code> <math>） */
 function renderInlineContent(text: string): React.ReactNode {
   if (!text) return null
-  // 简易处理：把 <br> 转换为 \n，<b>/<i>/<u>/<code> 转换为对应元素
-  // 注：完整方案需要 HTML parser，这里用正则做最简实现
+  // 先处理 LaTeX 公式：\frac{a}{b} → a/b, \sqrt{x} → √x, \times → ×, \div → ÷
+  // \cdot → ·, \leq → ≤, \geq → ≥, \neq → ≠, \approx → ≈
+  // \angle → ∠, \triangle → △, \perp → ⊥, \parallel → ∥
+  // \pi → π, \infty → ∞, \sum → ∑, \int → ∫
+  // \(...\) 和 $...$ → 去掉定界符
+  // \left( \right) → ( )
+  let processed = text
+    .replace(/\\\(/g, "").replace(/\\\)/g, "") // 去掉 \( \)
+    .replace(/\$\$/g, "").replace(/\$/g, "") // 去掉 $ $$
+    .replace(/\\frac\{([^}]*)\}\{([^}]*)\}/g, "($1)/($2)") // \frac{a}{b} → (a)/(b)
+    .replace(/\\sqrt\{([^}]*)\}/g, "√($1)") // \sqrt{x} → √(x)
+    .replace(/\\times/g, "×")
+    .replace(/\\div/g, "÷")
+    .replace(/\\cdot/g, "·")
+    .replace(/\\leq/g, "≤")
+    .replace(/\\geq/g, "≥")
+    .replace(/\\neq/g, "≠")
+    .replace(/\\approx/g, "≈")
+    .replace(/\\angle/g, "∠")
+    .replace(/\\triangle/g, "△")
+    .replace(/\\perp/g, "⊥")
+    .replace(/\\parallel/g, "∥")
+    .replace(/\\pi/g, "π")
+    .replace(/\\infty/g, "∞")
+    .replace(/\\sum/g, "∑")
+    .replace(/\\int/g, "∫")
+    .replace(/\\left\(/g, "(")
+    .replace(/\\right\)/g, ")")
+    .replace(/\\text\{([^}]*)\}/g, "$1") // \text{xxx} → xxx
+    .replace(/\\degree/g, "°")
+    .replace(/\\circ/g, "°")
+    .replace(/\\pm/g, "±")
+    .replace(/\\mp/g, "∓")
+    .replace(/\\Rightarrow/g, "⇒")
+    .replace(/\\rightarrow/g, "→")
+    .replace(/\\Leftarrow/g, "⇐")
+    .replace(/\\leftrightarrow/g, "↔")
+    .replace(/\\Leftrightarrow/g, "⇔")
+    // 处理上标 ^{2} → ², ^{3} → ³
+    .replace(/\^\{2\}/g, "²")
+    .replace(/\^\{3\}/g, "³")
+    .replace(/\^\{([^}]*)\}/g, "^($1)") // 其他上标
+    // 处理下标 _{n} → ₙ 等
+    .replace(/_\{([^}]*)\}/g, "_($1)")
+
   const parts: React.ReactNode[] = []
-  const tokens = text.split(/(<[^>]+>)/g)
+  const tokens = processed.split(/(<[^>]+>)/g)
   let key = 0
   let bold = false, italic = false, underline = false, code = false
   for (const t of tokens) {
@@ -1153,7 +1207,7 @@ function renderInlineContent(text: string): React.ReactNode {
     if (t === "<code>") { code = true; continue }
     if (t === "</code>") { code = false; continue }
     if (t === "<br>" || t === "<br/>") { parts.push(<br key={key++} />); continue }
-    if (t.startsWith("<") && t.endsWith(">")) continue  // 跳过未知标签
+    if (t.startsWith("<") && t.endsWith(">")) continue
     if (!t) continue
     let node: React.ReactNode = t
     if (code) node = <code className="px-1 py-0.5 rounded bg-muted text-xs font-mono">{t}</code>

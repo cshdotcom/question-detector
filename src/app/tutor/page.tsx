@@ -13,6 +13,9 @@ import {
   Plus,
   ScanText,
   Pen,
+  BookOpen,
+  FileText,
+  LayoutGrid,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authFetch } from "@/lib/auth-fetch"
@@ -161,6 +164,63 @@ export default function TutorHubPage() {
                 <div className="font-semibold text-base mb-1">独立画板</div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
                   专业画笔工具集：画笔/形状/文字/高亮/橡皮/图层/网格/几何图形/公式贴纸
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* 错题本 */}
+          <button
+            onClick={() => router.push("/tutor/mistakes")}
+            className="text-left p-5 rounded-2xl border bg-rose-50/50 dark:bg-rose-950/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-rose-500 text-white flex items-center justify-center shrink-0">
+                <BookOpen className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">错题本</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  按学科分类，拍照录入/手动录入，标签管理，复习计划
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* AI 写作文 */}
+          <button
+            onClick={() => router.push("/tutor/essays")}
+            className="text-left p-5 rounded-2xl border bg-emerald-50/50 dark:bg-emerald-950/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                <FileText className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">AI 写作文</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  语文/英语作文，自定义题目/字数/文体，AI 生成范文 + 写作思路
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* 全部记录 */}
+          <button
+            onClick={() => router.push("/tutor/history")}
+            className="text-left p-5 rounded-2xl border bg-slate-50/50 dark:bg-slate-950/20 hover:bg-slate-100 dark:hover:bg-slate-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-slate-600 text-white flex items-center justify-center shrink-0">
+                <LayoutGrid className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">全部记录</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  汇总所有辅导会话、作文、错题本，按类型筛选，按日期分组
                 </div>
               </div>
               <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Settings2, Eye, EyeOff, ExternalLink, Zap, Loader2, CheckCircle2, XCircle, Volume2 } from "lucide-react"
+import { Settings2, Eye, EyeOff, ExternalLink, Zap, Loader2, CheckCircle2, XCircle, Volume2, Mic } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -21,6 +21,12 @@ interface TTSConfig {
   autoPlay: boolean
 }
 
+interface ASRConfig {
+  engine: "browser" | "ai"
+  browserLang: string
+  autoAppend: boolean
+}
+
 const AI_VOICES = [
   { id: "tongtong", name: "彤彤（女·温柔）" },
   { id: "chuichui", name: "吹吹（女·活泼）" },
@@ -31,7 +37,16 @@ const AI_VOICES = [
   { id: "luodo", name: "罗多（男·低沉）" },
 ]
 
+const ASR_LANGS = [
+  { id: "zh-CN", name: "中文（简体）" },
+  { id: "en-US", name: "English (US)" },
+  { id: "en-GB", name: "English (UK)" },
+  { id: "ja-JP", name: "日本語" },
+  { id: "ko-KR", name: "한국어" },
+]
+
 const TTS_STORAGE_KEY = "tutor-tts-config"
+const ASR_STORAGE_KEY = "tutor-asr-config"
 
 function loadTTSConfig(): TTSConfig {
   if (typeof window === "undefined") return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false }
@@ -44,6 +59,19 @@ function loadTTSConfig(): TTSConfig {
 
 function saveTTSConfig(cfg: TTSConfig) {
   try { localStorage.setItem(TTS_STORAGE_KEY, JSON.stringify(cfg)) } catch {}
+}
+
+function loadASRConfig(): ASRConfig {
+  if (typeof window === "undefined") return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+  try {
+    const raw = localStorage.getItem(ASR_STORAGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return { engine: "ai", browserLang: "zh-CN", autoAppend: true }
+}
+
+function saveASRConfig(cfg: ASRConfig) {
+  try { localStorage.setItem(ASR_STORAGE_KEY, JSON.stringify(cfg)) } catch {}
 }
 
 interface Props {
@@ -68,6 +96,7 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; latency?: number } | null>(null)
   const [envHasDefault, setEnvHasDefault] = useState(false)
   const [ttsConfig, setTTSConfig] = useState<TTSConfig>(loadTTSConfig)
+  const [asrConfig, setASRConfig] = useState<ASRConfig>(loadASRConfig)
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([])
 
   useEffect(() => {
@@ -75,6 +104,7 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
       setDraft(aiConfig)
       setTestResult(null)
       setTTSConfig(loadTTSConfig())
+      setASRConfig(loadASRConfig())
       // 查询后端是否配置了默认 AI
       fetch("/api/env-config", { method: "GET" })
         .then((r) => r.json())
@@ -91,6 +121,12 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
       }
     }
   }, [open, aiConfig])
+
+  const updateASR = (patch: Partial<ASRConfig>) => {
+    const newCfg = { ...asrConfig, ...patch }
+    setASRConfig(newCfg)
+    saveASRConfig(newCfg)
+  }
 
   const updateTTS = (patch: Partial<TTSConfig>) => {
     const newCfg = { ...ttsConfig, ...patch }
@@ -374,6 +410,59 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
             <div className="flex items-center gap-2">
               <Label className="text-xs shrink-0 w-16">语速 {ttsConfig.aiSpeed.toFixed(1)}x</Label>
               <Slider value={[ttsConfig.aiSpeed]} onValueChange={(v) => updateTTS({ aiSpeed: v[0] })} min={0.5} max={2.0} step={0.1} className="flex-1" />
+            </div>
+          </div>
+        </div>
+
+        {/* ASR 语音识别设置 */}
+        <div className="border-t pt-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Mic className="size-4 text-muted-foreground" />
+            <h4 className="text-sm font-medium">语音识别（ASR）设置</h4>
+          </div>
+
+          {/* 默认引擎 */}
+          <div className="flex items-center justify-between gap-2">
+            <Label className="text-xs">默认引擎</Label>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => updateASR({ engine: "browser" })}
+                className={`px-3 py-1 rounded-md text-xs ${asrConfig.engine === "browser" ? "bg-blue-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                浏览器 ASR
+              </button>
+              <button
+                onClick={() => updateASR({ engine: "ai" })}
+                className={`px-3 py-1 rounded-md text-xs ${asrConfig.engine === "ai" ? "bg-violet-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                AI ASR
+              </button>
+            </div>
+          </div>
+
+          <div className="px-3 py-2 rounded-md bg-muted/30 space-y-2">
+            <div className="text-xs text-muted-foreground">
+              {asrConfig.engine === "browser"
+                ? "浏览器 ASR：免费、实时显示中间结果。需要 Chrome/Edge 浏览器。"
+                : "AI ASR（z-ai-web-dev-sdk）：音质好、识别准，支持中/英/日/韩。需消耗 API 配额。"}
+            </div>
+            {asrConfig.engine === "browser" && (
+              <div className="flex items-center gap-2">
+                <Label className="text-xs shrink-0 w-16">识别语言</Label>
+                <select
+                  className="flex-1 h-8 px-2 rounded border bg-background text-xs"
+                  value={asrConfig.browserLang}
+                  onChange={(e) => updateASR({ browserLang: e.target.value })}
+                >
+                  {ASR_LANGS.map((l) => (
+                    <option key={l.id} value={l.id}>{l.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">追加模式（不替换原文本）</Label>
+              <Switch checked={asrConfig.autoAppend} onCheckedChange={(v) => updateASR({ autoAppend: v })} />
             </div>
           </div>
         </div>

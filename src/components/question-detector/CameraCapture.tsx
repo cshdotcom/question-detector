@@ -15,6 +15,9 @@ import {
   ChevronUp,
   ChevronDown,
   Image as ImageIcon,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
@@ -42,6 +45,10 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
   const crossPageIdsRef = useRef<string[]>([])
   const [crossPageIds, setCrossPageIds] = useState<string[]>([])
   const [showCrossPagePanel, setShowCrossPagePanel] = useState(true)
+  // 数码变焦（zoom）：1.0~5.0，用 CSS transform 实现，不改变视频流
+  const [zoom, setZoom] = useState(1.0)
+  // pinch zoom 手势
+  const pinchStartRef = useRef<{ dist: number; zoom: number } | null>(null)
 
   const addImage = useDetectorStore((s) => s.addImage)
   const setCurrentImage = useDetectorStore((s) => s.setCurrentImage)
@@ -129,29 +136,27 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     await startStream()
   }, [startStream, stopStream])
 
-  // 抓取当前帧为 dataUrl
+  // 抓取当前帧为 dataUrl（应用当前 zoom：从中心裁剪 zoom 倍区域）
   const grabFrame = useCallback(() => {
     const video = videoRef.current
     if (!video || !video.videoWidth) {
       toast.error("视频流尚未就绪，请稍候再试")
       return null
     }
+    const vw = video.videoWidth
+    const vh = video.videoHeight
+    // zoom > 1 时：从中心裁剪 1/zoom 区域，再放大到原尺寸
+    const cropW = Math.round(vw / zoom)
+    const cropH = Math.round(vh / zoom)
+    const sx = Math.round((vw - cropW) / 2)
+    const sy = Math.round((vh - cropH) / 2)
+
     const canvas = document.createElement("canvas")
     const maxSide = 2000
-    const ratio = video.videoWidth / video.videoHeight
-    let w = video.videoWidth
-    let h = video.videoHeight
-    if (Math.max(w, h) > maxSide) {
-      if (w >= h) {
-        w = maxSide
-        h = Math.round(maxSide / ratio)
-      } else {
-        h = maxSide
-        w = Math.round(maxSide * ratio)
-      }
-    }
-    canvas.width = w
-    canvas.height = h
+    const outW = Math.min(cropW, maxSide)
+    const outH = Math.round(outW * (cropH / cropW))
+    canvas.width = outW
+    canvas.height = outH
     const ctx = canvas.getContext("2d")
     if (!ctx) {
       toast.error("无法创建画布上下文")
@@ -159,12 +164,13 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
     }
     const fm = facingRef.current
     if (fm === "user") {
-      ctx.translate(w, 0)
+      ctx.translate(outW, 0)
       ctx.scale(-1, 1)
     }
-    ctx.drawImage(video, 0, 0, w, h)
-    return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: w, height: h }
-  }, [])
+    // 从视频中心裁剪 zoom 倍区域，绘制到 canvas
+    ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, outW, outH)
+    return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: outW, height: outH }
+  }, [zoom])
 
   // 拍照
   const capture = useCallback(async () => {
@@ -404,14 +410,45 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
       </div>
 
       {/* 视频区 */}
-      <div className="flex-1 relative flex items-center justify-center min-h-0">
+      <div
+        className="flex-1 relative flex items-center justify-center min-h-0 overflow-hidden touch-none"
+        onTouchStart={(e) => {
+          if (e.touches.length === 2) {
+            const dx = e.touches[0].clientX - e.touches[1].clientX
+            const dy = e.touches[0].clientY - e.touches[1].clientY
+            pinchStartRef.current = { dist: Math.hypot(dx, dy), zoom }
+          }
+        }}
+        onTouchMove={(e) => {
+          if (e.touches.length === 2 && pinchStartRef.current) {
+            e.preventDefault()
+            const dx = e.touches[0].clientX - e.touches[1].clientX
+            const dy = e.touches[0].clientY - e.touches[1].clientY
+            const dist = Math.hypot(dx, dy)
+            const ratio = dist / pinchStartRef.current.dist
+            const newZoom = Math.max(1.0, Math.min(5.0, pinchStartRef.current.zoom * ratio))
+            setZoom(newZoom)
+          }
+        }}
+        onTouchEnd={() => { pinchStartRef.current = null }}
+        onWheel={(e) => {
+          // 鼠标滚轮缩放（桌面端）
+          if (!streaming) return
+          const delta = e.deltaY > 0 ? -0.2 : 0.2
+          setZoom((z) => Math.max(1.0, Math.min(5.0, z + delta)))
+        }}
+      >
         <video
           ref={videoRef}
           playsInline
           muted
           autoPlay
-          className="w-full h-full object-contain"
-          style={{ transform: facingDisplay === "user" ? "scaleX(-1)" : undefined }}
+          className="w-full h-full object-cover"
+          style={{
+            transform: `${facingDisplay === "user" ? "scaleX(-1) " : ""}scale(${zoom})`,
+            transformOrigin: "center center",
+            transition: "transform 0.15s ease-out",
+          }}
         />
         {!streaming && !error && (
           <div className="absolute inset-0 flex items-center justify-center text-white/80">
@@ -429,6 +466,36 @@ export function CameraCapture({ open, onClose }: CameraCaptureProps) {
               disabled={busy}
             >
               <RefreshCw className="size-4" /> 重试
+            </button>
+          </div>
+        )}
+        {/* 缩放控制条（右上角） */}
+        {streaming && (
+          <div className="absolute top-3 right-3 flex flex-col gap-1 bg-black/40 backdrop-blur rounded-lg p-1.5">
+            <button
+              onClick={() => setZoom((z) => Math.min(5.0, z + 0.5))}
+              disabled={zoom >= 5.0}
+              className="size-9 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center text-white disabled:opacity-30"
+              title="放大"
+            >
+              <ZoomIn className="size-4" />
+            </button>
+            <div className="text-center text-[10px] text-white/90 tabular-nums">{zoom.toFixed(1)}x</div>
+            <button
+              onClick={() => setZoom((z) => Math.max(1.0, z - 0.5))}
+              disabled={zoom <= 1.0}
+              className="size-9 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center text-white disabled:opacity-30"
+              title="缩小"
+            >
+              <ZoomOut className="size-4" />
+            </button>
+            <button
+              onClick={() => setZoom(1.0)}
+              disabled={zoom === 1.0}
+              className="size-9 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center text-white disabled:opacity-30"
+              title="重置缩放"
+            >
+              <Maximize className="size-4" />
             </button>
           </div>
         )}

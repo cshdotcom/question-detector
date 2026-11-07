@@ -23,6 +23,7 @@ import { toast } from "sonner"
 import { authFetch } from "@/lib/auth-fetch"
 import { sendTutorChat, type TutorMessageMeta } from "@/lib/tutor-chat-client"
 import { TTSPlayer } from "./TTSPlayer"
+import { VoiceInput } from "./VoiceInput"
 import type { Question, AIProviderConfig } from "@/lib/types"
 import {
   DropdownMenu,
@@ -523,6 +524,11 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           >
             <ImagePlus className="size-4" />
           </Button>
+          {/* 语音输入 */}
+          <VoiceInput
+            onText={(text) => setInput((prev) => prev + text)}
+            className="shrink-0"
+          />
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

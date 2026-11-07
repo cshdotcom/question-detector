@@ -78,3 +78,41 @@ model Whiteboard {
   @@index([sessionId])
   @@index([createdAt])
 }
+
+// 错题本：按学科分类，支持拍照录入/手动录入/从历史记录导入
+model MistakeBook {
+  id            String   @id
+  title         String   @default("未命名错题本")
+  subject       String   @default("math") // math | chinese | english | physics | chemistry | biology | other
+  // 错题列表 JSON：每项含 question(题目内容/image dataUrl)、answer(答案)、analysis(解析)、tags(标签)、createdAt
+  items         String   @default("[]") // MistakeItem[] JSON
+  cover         String   @default("") // 封面 dataUrl（可选）
+  count         Int      @default(0) // 错题数量（冗余字段，方便列表显示）
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([subject])
+  @@index([createdAt])
+}
+
+// AI 写作文会话（语文作文 / 英语作文）
+model EssaySession {
+  id            String   @id
+  type          String   // "chinese" | "english"
+  title         String   // 题目标题
+  prompt        String   @default("") // 用户输入的作文要求
+  wordCount     Int      @default(800) // 字数要求
+  genre         String   @default("议论文") // 文体：议论文/记叙文/说明文/应用文/散文...
+  // 生成的范文
+  essay         String   @default("") // 范文正文
+  // 写作思路（审题/选材/结构提纲）
+  outline       String   @default("") // 写作思路 JSON
+  // 可选附图（拍题拍物）
+  imageData     String   @default("")
+  status        String   @default("active") // active | archived
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@index([type])
+  @@index([createdAt])
+}

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import {
   ScanText,
   Camera,
@@ -21,6 +22,7 @@ import {
   KeyRound,
   LogOut,
   MoreVertical,
+  GraduationCap,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
@@ -61,6 +63,7 @@ type MobileTab = "gallery" | "canvas" | "questions"
 export default function Home() {
   useAutoDetect()
   const isMobile = useIsMobile()
+  const router = useRouter()
   const setAIConfig = useDetectorStore((s) => s.setAIConfig)
   const hydrate = useDetectorStore((s) => s.hydrate)
   const hydrated = useDetectorStore((s) => s.hydrated)
@@ -149,6 +152,18 @@ export default function Home() {
             </>
           )}
 
+          {/* AI 辅导入口：跳到 /tutor 中心看历史 */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 px-2 shrink-0 gap-1"
+            onClick={() => router.push("/tutor")}
+            title="AI 辅导（解题模式 + 讲题模式）"
+          >
+            <GraduationCap className="size-4" />
+            <span className="hidden sm:inline">AI 辅导</span>
+          </Button>
+
           {mounted && !isMobile && (
             <Button
               variant="ghost"
@@ -198,6 +213,9 @@ export default function Home() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onClick={() => router.push("/tutor")}>
+                  <GraduationCap className="size-4 mr-2" /> AI 辅导
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setAiSettingsOpen(true)}>
                   <Settings2 className="size-4 mr-2" /> AI 设置
                 </DropdownMenuItem>

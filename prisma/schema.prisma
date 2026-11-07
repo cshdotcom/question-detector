@@ -33,3 +33,25 @@ model Password {
   hash      String
   updatedAt DateTime @default(now()) @updatedAt
 }
+
+// AI 辅导会话（解题模式 + 讲题模式）
+// 一道题（imageId + questionIdx）可对应多个会话
+model TutorSession {
+  id           String   @id
+  type         String   // "solve" | "lecture"
+  title        String   // 显示标题，通常从题目内容截取
+  imageId      String   // 关联 StoredImage.id
+  questionIdx  Int      @default(0) // 题目在 image.questions 数组中的索引
+  questionSnapshot String @default("") // 创建时的题目内容快照（JSON：number/content/bbox/kind）
+  imageCrop    String   @default("") // 题目截图 dataUrl（cropped from image）
+  messages     String   @default("[]") // ChatMessage[] JSON
+  stage        Int      @default(0) // 解题模式：当前阶段 0~6
+  knowledgeCards String @default("[]") // 知识卡片 JSON（含 SVG）
+  visualBoards String  @default("[]") // 讲题模式生成的 HTML 画板列表
+  status       String   @default("active") // active | completed | archived
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([imageId])
+  @@index([createdAt])
+}

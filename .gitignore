@@ -52,3 +52,12 @@ prompt
 server.log
 # Skills directory
 /skills/
+# Test artifacts (dev only)
+/scripts/*.png
+/scripts/*.jpg
+/scripts/check_*.js
+/scripts/test_*.js
+/scripts/make_test_handwriting.py
+/download/test_handwriting_*.png
+/db/custom.db*
+/upload/

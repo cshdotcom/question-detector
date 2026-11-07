@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import {
   Trash2,
   Plus,
@@ -17,6 +18,8 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  Brain,
+  Lightbulb,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
@@ -39,6 +42,7 @@ import { Markdown } from "@/components/markdown/Markdown"
 import type { Question } from "@/lib/types"
 
 export function QuestionList() {
+  const router = useRouter()
   const currentImage = useDetectorStore((s) => s.images.find((x) => x.id === s.currentImageId))
   const selectedQuestionId = useDetectorStore((s) => s.selectedQuestionId)
   const selectQuestion = useDetectorStore((s) => s.selectQuestion)
@@ -382,6 +386,12 @@ export function QuestionList() {
                     className="h-7 text-sm w-20"
                   />
                   <div className="ml-auto flex items-center gap-0.5 shrink-0">
+                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-violet-600 dark:text-violet-400" title="解题模式：6 阶段溯源诊断" onClick={(e) => { e.stopPropagation(); router.push(`/tutor/new?type=solve&imageId=${currentImage.id}&questionIdx=${idx}`) }}>
+                      <Brain className="size-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-amber-600 dark:text-amber-400" title="讲题模式：HTML 画板 + SVG" onClick={(e) => { e.stopPropagation(); router.push(`/tutor/new?type=lecture&imageId=${currentImage.id}&questionIdx=${idx}`) }}>
+                      <Lightbulb className="size-3.5" />
+                    </Button>
                     <Button variant="ghost" size="sm" className="h-7 w-7 p-0" title="复制题文" onClick={(e) => { e.stopPropagation(); copyQuestionText(q) }}>
                       <Copy className="size-3.5" />
                     </Button>

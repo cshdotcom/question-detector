@@ -388,21 +388,17 @@ export async function removeColoredMarksFromImage(
   }
 
   // 3. 扩散修补（onion-peel BFS）：从掩膜边界向内逐层用有效邻居均值填充
+  //    使用与 eraseRegions 相同的 v2 算法（8 邻域 + 多次迭代 + 羽化）
   const filled = new Uint8Array(n) // 1 = 已填充
   const queue: number[] = []
   // 初始化：掩膜外像素都是有效的
   for (let i = 0; i < n; i++) if (!mask2[i]) filled[i] = 1
-  // 找掩膜中与有效像素相邻的作为第一层
+  // 找掩膜中与有效像素相邻的作为第一层（8 邻域）
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x
       if (!mask2[i]) continue
-      if (
-        (x > 0 && filled[i - 1]) ||
-        (x < w - 1 && filled[i + 1]) ||
-        (y > 0 && filled[i - w]) ||
-        (y < h - 1 && filled[i + w])
-      ) {
+      if (hasValidNeighbor8(x, y, w, h, filled)) {
         queue.push(i)
       }
     }
@@ -411,40 +407,82 @@ export async function removeColoredMarksFromImage(
   while (head < queue.length) {
     const i = queue[head++]
     if (filled[i]) continue
-    let rs = 0
-    let gs = 0
-    let bs = 0
-    let cnt = 0
     const x = i % w
     const y = (i / w) | 0
-    if (x > 0 && filled[i - 1]) { rs += data[(i - 1) * 4]; gs += data[(i - 1) * 4 + 1]; bs += data[(i - 1) * 4 + 2]; cnt++ }
-    if (x < w - 1 && filled[i + 1]) { rs += data[(i + 1) * 4]; gs += data[(i + 1) * 4 + 1]; bs += data[(i + 1) * 4 + 2]; cnt++ }
-    if (y > 0 && filled[i - w]) { rs += data[(i - w) * 4]; gs += data[(i - w) * 4 + 1]; bs += data[(i - w) * 4 + 2]; cnt++ }
-    if (y < h - 1 && filled[i + w]) { rs += data[(i + w) * 4]; gs += data[(i + w) * 4 + 1]; bs += data[(i + w) * 4 + 2]; cnt++ }
-    if (cnt > 0) {
-      data[i * 4] = rs / cnt
-      data[i * 4 + 1] = gs / cnt
-      data[i * 4 + 2] = bs / cnt
+    const sum = sampleNeighbors8(x, y, w, h, data, filled)
+    if (sum.cnt > 0) {
+      data[i * 4] = sum.r / sum.w
+      data[i * 4 + 1] = sum.g / sum.w
+      data[i * 4 + 2] = sum.b / sum.w
       data[i * 4 + 3] = 255
       filled[i] = 1
-      // 把未填充邻居入队
-      if (x > 0 && mask2[i - 1] && !filled[i - 1]) queue.push(i - 1)
-      if (x < w - 1 && mask2[i + 1] && !filled[i + 1]) queue.push(i + 1)
-      if (y > 0 && mask2[i - w] && !filled[i - w]) queue.push(i - w)
-      if (y < h - 1 && mask2[i + w] && !filled[i + w]) queue.push(i + w)
+      pushUnfilledMask8(x, y, w, h, mask2, filled, queue, i)
     }
   }
-  // 兜底：仍没填上的（理论上不会有）填白色
+  // 兜底：BFS 没填上的用最近有效像素填充
   for (let i = 0; i < n; i++) {
     if (mask2[i] && !filled[i]) {
-      data[i * 4] = 255
-      data[i * 4 + 1] = 255
-      data[i * 4 + 2] = 255
+      const x = i % w
+      const y = (i / w) | 0
+      const color = findNearestValidColor(x, y, w, h, filled, data)
+      data[i * 4] = color[0]
+      data[i * 4 + 1] = color[1]
+      data[i * 4 + 2] = color[2]
+      data[i * 4 + 3] = 255
+      filled[i] = 1
+    }
+  }
+  // 多次迭代平滑（3 轮），消除方向性条纹
+  for (let pass = 0; pass < 3; pass++) {
+    const snapshot = new Uint8ClampedArray(data.length)
+    snapshot.set(data)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        if (!mask2[i]) continue
+        const sum = sampleNeighbors8FromSnapshot(x, y, w, h, snapshot)
+        if (sum.cnt > 0) {
+          data[i * 4] = sum.r / sum.w
+          data[i * 4 + 1] = sum.g / sum.w
+          data[i * 4 + 2] = sum.b / sum.w
+        }
+      }
+    }
+  }
+  // 边界羽化
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (!mask2[i]) continue
+      let neighborValid = 0
+      let neighborCount = 0
+      let r = 0, g = 0, b = 0
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          const ni = ny * w + nx
+          neighborCount++
+          if (!mask2[ni]) {
+            neighborValid++
+            r += data[ni * 4]
+            g += data[ni * 4 + 1]
+            b += data[ni * 4 + 2]
+          }
+        }
+      }
+      if (neighborValid > 0 && neighborValid < neighborCount) {
+        data[i * 4] = (data[i * 4] + r / neighborValid) / 2
+        data[i * 4 + 1] = (data[i * 4 + 1] + g / neighborValid) / 2
+        data[i * 4 + 2] = (data[i * 4 + 2] + b / neighborValid) / 2
+      }
     }
   }
 
   ctx.putImageData(imageData, 0, 0)
-  return { dataUrl: canvas.toDataURL("image/jpeg", 0.94), width: w, height: h }
+  return { dataUrl: canvas.toDataURL("image/png"), width: w, height: h }
 }
 
 /** AI 去除手写：用 VLM（文字模型）识别手写笔迹区域 → 本地按 bbox 做洋葱皮局部擦除
@@ -504,7 +542,7 @@ export async function removeHandwritingFromImage(
     return { dataUrl: sendCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch }
   }
 
-  // 本地按 bbox 做洋葱皮局部擦除
+  // 本地按 bbox 做局部擦除（改进版 onion-peel + 多次迭代平滑）
   const outCanvas = document.createElement("canvas")
   outCanvas.width = cw
   outCanvas.height = ch
@@ -518,12 +556,15 @@ export async function removeHandwritingFromImage(
   eraseRegions(imageData, boxes)
   octx.putImageData(imageData, 0, 0)
 
-  return { dataUrl: outCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch }
+  return { dataUrl: outCanvas.toDataURL("image/png"), width: cw, height: ch }
 }
 
-/** 按 bbox 列表在 ImageData 上做洋葱皮局部擦除：
- *  - 每个 bbox 内的像素被视为"待擦除"
- *  - 用 8 邻域 onion-peel BFS 从边界向内逐层用有效邻居均值填充
+/** 按 bbox 列表在 ImageData 上做局部擦除（v3 改进版）：
+ *  - 跳过异常大的 bbox（>35% 单边长，VLM 误检保护）
+ *  - mask 膨胀 2 圈（覆盖抗锯齿边缘）
+ *  - BFS 采样时跳过 mask 内深色像素（亮度<128 的手写笔迹本身）
+ *    避免把深色笔迹颜色作为颜色源混入均值，导致灰蓝涂抹晕染
+ *  - 8 邻域 BFS 初次填充 + 3 轮迭代平滑 + 边界羽化
  *  - 印刷题目像素完全不动 */
 function eraseRegions(
   imageData: ImageData,
@@ -534,48 +575,74 @@ function eraseRegions(
   const data = imageData.data
   const n = w * h
 
-  // 1. 构建擦除掩膜（待擦除像素 = 1）
+  // 1. 构建擦除掩膜（不内缩，依赖 mask 内深色过滤来保护抗锯齿）
   const mask = new Uint8Array(n)
+  let validBoxCount = 0
   for (const b of boxes) {
+    // 跳过异常大的 bbox（>35% 单边长，VLM 误检保护）
+    if (b.width > 0.35 || b.height > 0.35) continue
     const x0 = Math.max(0, Math.floor(b.x * w))
     const y0 = Math.max(0, Math.floor(b.y * h))
     const x1 = Math.min(w, Math.ceil((b.x + b.width) * w))
     const y1 = Math.min(h, Math.ceil((b.y + b.height) * h))
+    if (x1 <= x0 || y1 <= y0) continue
+    validBoxCount++
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         mask[y * w + x] = 1
       }
     }
   }
+  if (validBoxCount === 0) return
 
-  // 2. 掩膜膨胀 1px，确保边缘笔迹也被覆盖
-  const dilated = new Uint8Array(n)
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x
-      if (mask[i]) { dilated[i] = 1; continue }
-      if ((x > 0 && mask[i - 1]) || (x < w - 1 && mask[i + 1]) ||
-          (y > 0 && mask[i - w]) || (y < h - 1 && mask[i + w])) {
-        dilated[i] = 1
+  // 2. mask 膨胀 5 圈（覆盖抗锯齿边缘 + VLM bbox 边界外溢的笔迹 + 字体下行）
+  let cur = mask
+  for (let pass = 0; pass < 5; pass++) {
+    const next = new Uint8Array(n)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        if (cur[i]) { next[i] = 1; continue }
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue
+            const nx = x + dx, ny = y + dy
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+            if (cur[ny * w + nx]) { next[i] = 1; break }
+          }
+          if (next[i]) break
+        }
       }
     }
+    cur = next
+  }
+  const dilated = cur
+
+  // 3. 识别 mask 内的"深色笔迹像素"（亮度<128）—— 这些是手写笔迹本身
+  //    BFS 采样时跳过这些像素，只用周围浅色像素（纸张背景）作为颜色源
+  //    这样能避免深色笔迹颜色污染填充结果
+  const isDarkStroke = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    if (!dilated[i]) continue
+    const lum = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3
+    if (lum < 128) isDarkStroke[i] = 1
   }
 
-  // 3. 洋葱皮 BFS：从掩膜边界向内逐层用有效邻居均值填充
+  // 4. 8 邻域 onion-peel BFS 初次填充
+  //    filled[i]=1 表示该像素可作为有效颜色源
+  //    mask 外像素 = 1（有效）；mask 内深色笔迹像素 = 0（无效，跳过）；mask 内其他像素 = 0（待填）
   const filled = new Uint8Array(n)
-  for (let i = 0; i < n; i++) if (!dilated[i]) filled[i] = 1
+  for (let i = 0; i < n; i++) {
+    if (!dilated[i]) filled[i] = 1  // mask 外
+    // mask 内：默认 filled=0（待填）
+  }
 
   const queue: number[] = []
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x
-      if (!dilated[i]) continue
-      if (
-        (x > 0 && filled[i - 1]) ||
-        (x < w - 1 && filled[i + 1]) ||
-        (y > 0 && filled[i - w]) ||
-        (y < h - 1 && filled[i + w])
-      ) {
+      if (!dilated[i] || isDarkStroke[i]) continue  // 跳过非 mask 和深色笔迹
+      if (hasValidNeighbor8(x, y, w, h, filled)) {
         queue.push(i)
       }
     }
@@ -585,33 +652,195 @@ function eraseRegions(
   while (head < queue.length) {
     const i = queue[head++]
     if (filled[i]) continue
-    let rs = 0, gs = 0, bs = 0, cnt = 0
     const x = i % w
     const y = (i / w) | 0
-    if (x > 0 && filled[i - 1]) { rs += data[(i - 1) * 4]; gs += data[(i - 1) * 4 + 1]; bs += data[(i - 1) * 4 + 2]; cnt++ }
-    if (x < w - 1 && filled[i + 1]) { rs += data[(i + 1) * 4]; gs += data[(i + 1) * 4 + 1]; bs += data[(i + 1) * 4 + 2]; cnt++ }
-    if (y > 0 && filled[i - w]) { rs += data[(i - w) * 4]; gs += data[(i - w) * 4 + 1]; bs += data[(i - w) * 4 + 2]; cnt++ }
-    if (y < h - 1 && filled[i + w]) { rs += data[(i + w) * 4]; gs += data[(i + w) * 4 + 1]; bs += data[(i + w) * 4 + 2]; cnt++ }
-    if (cnt > 0) {
-      data[i * 4] = rs / cnt
-      data[i * 4 + 1] = gs / cnt
-      data[i * 4 + 2] = bs / cnt
+    const sum = sampleNeighbors8(x, y, w, h, data, filled)
+    if (sum.cnt > 0) {
+      data[i * 4] = sum.r / sum.w
+      data[i * 4 + 1] = sum.g / sum.w
+      data[i * 4 + 2] = sum.b / sum.w
       data[i * 4 + 3] = 255
       filled[i] = 1
-      if (x > 0 && dilated[i - 1] && !filled[i - 1]) queue.push(i - 1)
-      if (x < w - 1 && dilated[i + 1] && !filled[i + 1]) queue.push(i + 1)
-      if (y > 0 && dilated[i - w] && !filled[i - w]) queue.push(i - w)
-      if (y < h - 1 && dilated[i + w] && !filled[i + w]) queue.push(i + w)
+      pushUnfilledMask8(x, y, w, h, dilated, filled, queue, i)
     }
   }
 
-  // 4. 兜底：没填上的（孤立手写大块）填白色
+  // 5. 兜底：处理深色笔迹像素（BFS 跳过的）+ 任何未填的 mask 像素
+  //    用径向搜索找最近的非 mask 有效像素颜色
   for (let i = 0; i < n; i++) {
     if (dilated[i] && !filled[i]) {
-      data[i * 4] = 255
-      data[i * 4 + 1] = 255
-      data[i * 4 + 2] = 255
+      const x = i % w
+      const y = (i / w) | 0
+      const color = findNearestValidColor(x, y, w, h, filled, data)
+      data[i * 4] = color[0]
+      data[i * 4 + 1] = color[1]
+      data[i * 4 + 2] = color[2]
       data[i * 4 + 3] = 255
+      filled[i] = 1
     }
   }
+
+  // 6. 多次迭代平滑（3 轮）：用周围 8 邻域重新加权平均
+  for (let pass = 0; pass < 3; pass++) {
+    const snapshot = new Uint8ClampedArray(data.length)
+    snapshot.set(data)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        if (!dilated[i]) continue
+        // 跳过 mask 内深色笔迹像素（避免被平滑回深色）—— 它们已经被填好了
+        // 实际上第 5 步已经把所有 mask 像素填好了，所以这里直接平均
+        const sum = sampleNeighbors8FromSnapshot(x, y, w, h, snapshot)
+        if (sum.cnt > 0) {
+          data[i * 4] = sum.r / sum.w
+          data[i * 4 + 1] = sum.g / sum.w
+          data[i * 4 + 2] = sum.b / sum.w
+        }
+      }
+    }
+  }
+
+  // 7. 边界羽化
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (!dilated[i]) continue
+      let neighborValid = 0
+      let neighborCount = 0
+      let r = 0, g = 0, b = 0
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          const ni = ny * w + nx
+          neighborCount++
+          if (!dilated[ni]) {
+            neighborValid++
+            r += data[ni * 4]
+            g += data[ni * 4 + 1]
+            b += data[ni * 4 + 2]
+          }
+        }
+      }
+      if (neighborValid > 0 && neighborValid < neighborCount) {
+        data[i * 4] = (data[i * 4] + r / neighborValid) / 2
+        data[i * 4 + 1] = (data[i * 4 + 1] + g / neighborValid) / 2
+        data[i * 4 + 2] = (data[i * 4 + 2] + b / neighborValid) / 2
+      }
+    }
+  }
+}
+
+/** 检查 8 邻域是否有有效（filled）像素 */
+function hasValidNeighbor8(x: number, y: number, w: number, h: number, filled: Uint8Array): boolean {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+      if (filled[ny * w + nx]) return true
+    }
+  }
+  return false
+}
+
+/** 8 邻域加权采样（对角线权重 0.7） */
+function sampleNeighbors8(
+  x: number, y: number, w: number, h: number,
+  data: Uint8ClampedArray, filled: Uint8Array
+): { r: number; g: number; b: number; cnt: number; w: number } {
+  let r = 0, g = 0, b = 0, wSum = 0, cnt = 0
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+      const ni = ny * w + nx
+      if (!filled[ni]) continue
+      const weight = (dx !== 0 && dy !== 0) ? 0.7 : 1.0
+      r += data[ni * 4] * weight
+      g += data[ni * 4 + 1] * weight
+      b += data[ni * 4 + 2] * weight
+      wSum += weight
+      cnt++
+    }
+  }
+  return { r, g, b, cnt, w: wSum }
+}
+
+/** 同 sampleNeighbors8，但从 snapshot 读取（用于迭代平滑时防止污染） */
+function sampleNeighbors8FromSnapshot(
+  x: number, y: number, w: number, h: number,
+  snapshot: Uint8ClampedArray
+): { r: number; g: number; b: number; cnt: number; w: number } {
+  let r = 0, g = 0, b = 0, wSum = 0, cnt = 0
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+      const ni = ny * w + nx
+      const weight = (dx !== 0 && dy !== 0) ? 0.7 : 1.0
+      r += snapshot[ni * 4] * weight
+      g += snapshot[ni * 4 + 1] * weight
+      b += snapshot[ni * 4 + 2] * weight
+      wSum += weight
+      cnt++
+    }
+  }
+  return { r, g, b, cnt, w: wSum }
+}
+
+/** 把未填充的 mask 邻居推入队列（8 邻域） */
+function pushUnfilledMask8(
+  x: number, y: number, w: number, h: number,
+  mask: Uint8Array, filled: Uint8Array,
+  queue: number[], currentIdx: number
+) {
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      if (dx === 0 && dy === 0) continue
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+      const ni = ny * w + nx
+      if (mask[ni] && !filled[ni]) queue.push(ni)
+    }
+  }
+}
+
+/** 找最近的有效像素颜色（径向搜索，最大半径 30） */
+function findNearestValidColor(
+  x: number, y: number, w: number, h: number,
+  filled: Uint8Array, data: Uint8ClampedArray
+): [number, number, number] {
+  const maxR = 30
+  for (let r = 1; r <= maxR; r++) {
+    let r_sum = 0, g_sum = 0, b_sum = 0, cnt = 0
+    // 在半径 r 的圆周上采样
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue // 只取外圈
+        const nx = x + dx
+        const ny = y + dy
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+        const ni = ny * w + nx
+        if (filled[ni]) {
+          r_sum += data[ni * 4]
+          g_sum += data[ni * 4 + 1]
+          b_sum += data[ni * 4 + 2]
+          cnt++
+        }
+      }
+    }
+    if (cnt > 0) {
+      return [r_sum / cnt, g_sum / cnt, b_sum / cnt]
+    }
+  }
+  return [255, 255, 255] // 全白兜底
 }

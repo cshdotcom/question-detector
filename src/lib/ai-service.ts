@@ -125,3 +125,103 @@ export async function testAIConnection(cfg: AIProviderConfig): Promise<{ ok: boo
     return { ok: false, message: (e as Error).message.slice(0, 200) }
   }
 }
+
+/** 流式 AI 调用：每次收到 token 调一次 onToken，最终返回完整 content
+ *  - OpenAI 兼容 API：用 stream:true，解析 SSE data: 行
+ *  - Z.ai SDK：不支持真流式，降级为非流式（一次性返回）
+ *  - 中断：调用返回的 abort 函数可中断请求 */
+export async function callVisionChatStream(
+  messages: ChatMessage[],
+  options: {
+    config?: AIProviderConfig
+    maxTokens?: number
+    onToken?: (token: string) => void
+    signal?: AbortSignal
+  } = {}
+): Promise<ChatResult> {
+  const cfg = options.config
+  // 1. 前端启用了第三方 API → 流式调用 OpenAI 兼容
+  if (cfg?.enabled && cfg.apiKey && cfg.baseURL) {
+    return callOpenAICompatibleStream(cfg, messages, options)
+  }
+  // 2. 前端未启用 → 尝试后端 env 默认
+  const envCfg = getEnvAIConfig()
+  if (envCfg) {
+    return callOpenAICompatibleStream(envCfg, messages, options)
+  }
+  // 3. 都没有 → Z.ai SDK（不支持流式，降级一次性返回）
+  const result = await callZaiSDK(messages)
+  if (options.onToken) options.onToken(result.content)
+  return result
+}
+
+/** OpenAI 兼容 API 流式调用 */
+async function callOpenAICompatibleStream(
+  cfg: AIProviderConfig,
+  messages: ChatMessage[],
+  options: { maxTokens?: number; onToken?: (t: string) => void; signal?: AbortSignal }
+): Promise<ChatResult> {
+  const baseURL = cfg.baseURL.replace(/\/$/, "")
+  const url = `${baseURL}/chat/completions`
+  const body: Record<string, unknown> = {
+    model: cfg.model,
+    messages,
+    max_tokens: options.maxTokens ?? 4096,
+    stream: true,
+  }
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.apiKey}`,
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  })
+  if (!resp.ok || !resp.body) {
+    const txt = await resp.text().catch(() => "")
+    throw new Error(`OpenAI 兼容 API 返回 ${resp.status}：${txt.slice(0, 200)}`)
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder("utf-8")
+  let buffer = ""
+  let fullContent = ""
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // 解析 SSE：按 \n\n 分割事件
+      const events = buffer.split("\n\n")
+      buffer = events.pop() || ""
+      for (const evt of events) {
+        const lines = evt.split("\n").filter(Boolean)
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue
+          const data = line.slice(5).trim()
+          if (data === "[DONE]") continue
+          try {
+            const json = JSON.parse(data)
+            const token = json?.choices?.[0]?.delta?.content
+            if (typeof token === "string" && token) {
+              fullContent += token
+              if (options.onToken) options.onToken(token)
+            }
+          } catch {
+            // 忽略解析错误
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  if (!fullContent) {
+    // 兜底：流式没拿到内容，可能是模型不支持 stream
+    const result = await callOpenAICompatible(cfg, messages, options.maxTokens)
+    if (options.onToken) options.onToken(result.content)
+    return result
+  }
+  return { content: fullContent }
+}

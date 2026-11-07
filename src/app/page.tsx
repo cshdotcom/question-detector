@@ -18,11 +18,21 @@ import {
   Images,
   Frame,
   ListChecks,
+  KeyRound,
+  LogOut,
+  MoreVertical,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   Dialog,
   DialogContent,
@@ -39,6 +49,7 @@ import { ExportMenu } from "@/components/question-detector/ExportMenu"
 import { BatchDetect } from "@/components/question-detector/BatchDetect"
 import { MergeImages } from "@/components/question-detector/MergeImages"
 import { AISettingsDialog } from "@/components/question-detector/AISettingsDialog"
+import { ChangePasswordDialog } from "@/components/question-detector/ChangePasswordDialog"
 import { useDetectorStore } from "@/lib/store"
 import { useAutoDetect } from "@/lib/use-auto-detect"
 import { loadAIConfig } from "@/lib/ai-config"
@@ -55,13 +66,14 @@ export default function Home() {
   const hydrated = useDetectorStore((s) => s.hydrated)
   useEffect(() => {
     setAIConfig(loadAIConfig())
-    // 启动时从 IndexedDB 恢复已保存的图片
+    // 启动时从云端数据库恢复已保存的图片
     void hydrate()
   }, [setAIConfig, hydrate])
   const [cameraOpen, setCameraOpen] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false)
+  const [changePwdOpen, setChangePwdOpen] = useState(false)
   const [mobileTab, setMobileTab] = useState<MobileTab>("canvas")
 
   const imagesCount = useDetectorStore((s) => s.images.length)
@@ -137,7 +149,7 @@ export default function Home() {
             </>
           )}
 
-          {mounted && (
+          {mounted && !isMobile && (
             <Button
               variant="ghost"
               size="sm"
@@ -149,14 +161,77 @@ export default function Home() {
             </Button>
           )}
 
-          <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" onClick={() => setShortcutsOpen(true)} title="键盘快捷键">
-            <Keyboard className="size-4" />
-          </Button>
-          <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" onClick={() => setAiSettingsOpen(true)} title="AI 设置">
-            <Settings2 className="size-4" />
-          </Button>
+          {!isMobile && (
+            <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" onClick={() => setShortcutsOpen(true)} title="键盘快捷键">
+              <Keyboard className="size-4" />
+            </Button>
+          )}
+          {!isMobile && (
+            <>
+              <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" onClick={() => setAiSettingsOpen(true)} title="AI 设置">
+                <Settings2 className="size-4" />
+              </Button>
+              <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" onClick={() => setChangePwdOpen(true)} title="修改密码">
+                <KeyRound className="size-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-8 p-0 shrink-0 text-muted-foreground"
+                title="退出登录"
+                onClick={async () => {
+                  await fetch("/api/auth/logout", { method: "POST" }).catch(() => {})
+                  window.location.href = "/login"
+                }}
+              >
+                <LogOut className="size-4" />
+              </Button>
+            </>
+          )}
 
-          {imagesCount > 0 && (
+          {/* 移动端：次要功能收进「更多」菜单，避免工具栏溢出 */}
+          {isMobile && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0" title="更多">
+                  <MoreVertical className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onClick={() => setAiSettingsOpen(true)}>
+                  <Settings2 className="size-4 mr-2" /> AI 设置
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setChangePwdOpen(true)}>
+                  <KeyRound className="size-4 mr-2" /> 修改密码
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+                  {theme === "dark" ? <Sun className="size-4 mr-2" /> : <Moon className="size-4 mr-2" />}
+                  切换主题
+                </DropdownMenuItem>
+                {imagesCount > 0 && (
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={() => {
+                      if (confirm("确定要清空所有图片和题目吗？")) clearAll()
+                    }}
+                  >
+                    <Trash2 className="size-4 mr-2" /> 清空所有
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={async () => {
+                    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {})
+                    window.location.href = "/login"
+                  }}
+                >
+                  <LogOut className="size-4 mr-2" /> 退出登录
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
+          {!isMobile && imagesCount > 0 && (
             <Button
               variant="ghost"
               size="sm"
@@ -346,6 +421,9 @@ export default function Home() {
 
       {/* AI 设置 */}
       <AISettingsDialog open={aiSettingsOpen} onOpenChange={setAiSettingsOpen} />
+
+      {/* 修改密码 */}
+      <ChangePasswordDialog open={changePwdOpen} onOpenChange={setChangePwdOpen} />
 
       <SonnerToaster richColors position="top-center" />
     </div>

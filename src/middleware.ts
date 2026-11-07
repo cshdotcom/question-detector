@@ -1,64 +1,50 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { createHash } from "crypto"
 
 /**
- * 访问密码保护中间件
+ * 统一鉴权中间件
  *
- * - env APP_PASSWORD 不设置 → 公开访问，不做任何拦截
- * - env APP_PASSWORD 设置 → 必须先在 /login 输入正确密码，写入 auth_token cookie 才能访问其他页面
+ * 每个请求（动态路径）通过内部调用 /api/auth/verify 校验 auth_token cookie：
+ * - verify 200 → 放行（含「未启用密码」场景）
+ * - verify 401 → 重定向 /login（未登录、token 过期、密码已被修改）
  *
- * auth_token = sha256(password + "::" + APP_PASSWORD_SALT)
- * 服务端在 middleware 中重新计算并比对，避免 cookie 直接存明文
- *
- * 注意：Next.js 16 middleware 默认 Edge Runtime 不支持 Node crypto，
- * 因此显式 export const runtime = "nodejs"
+ * /api/auth/* 全部放行，由各自 handler 处理（login 无需登录即可调用）
  */
 
 export const runtime = "nodejs"
 
-const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/auth/status"]
-const PUBLIC_PREFIXES = ["/_next", "/favicon", "/logo.svg", "/robots.txt"]
+const PUBLIC_PREFIXES = ["/login", "/api/auth"]
 
 function isPublic(pathname: string): boolean {
-  if (PUBLIC_PATHS.includes(pathname)) return true
   for (const p of PUBLIC_PREFIXES) {
-    if (pathname.startsWith(p)) return true
+    if (pathname === p || pathname.startsWith(p + "/")) return true
   }
   return false
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex")
 }
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
-  // 没有 APP_PASSWORD → 公开访问
-  const appPassword = process.env.APP_PASSWORD?.trim()
-  if (!appPassword) {
-    return NextResponse.next()
-  }
-
-  // 公开路径放行
   if (isPublic(pathname)) {
     return NextResponse.next()
   }
 
-  // 检查 cookie auth_token
-  const token = req.cookies.get("auth_token")?.value
-  if (!token) {
-    return redirectToLogin(req)
+  // 内部转发到 verify（verify 已在放行名单中，不会递归触发 middleware）
+  try {
+    const verifyUrl = new URL("/api/auth/verify", req.nextUrl.origin)
+    const verifyResp = await fetch(verifyUrl, {
+      headers: { cookie: req.headers.get("cookie") || "" },
+      cache: "no-store",
+    })
+    if (verifyResp.ok) {
+      return NextResponse.next()
+    }
+  } catch (e) {
+    // verify 调用失败时保守放行（避免数据库故障导致整站不可用）
+    console.error("[middleware] verify failed:", e)
+    return NextResponse.next()
   }
 
-  // 重新计算并比对
-  const salt = process.env.APP_PASSWORD_SALT || "question-detector-salt-2026"
-  const expected = sha256(`${appPassword}::${salt}`)
-  if (token !== expected) {
-    return redirectToLogin(req)
-  }
-
-  return NextResponse.next()
+  return redirectToLogin(req)
 }
 
 function redirectToLogin(req: NextRequest): NextResponse {
@@ -72,7 +58,6 @@ function redirectToLogin(req: NextRequest): NextResponse {
 }
 
 export const config = {
-  // 匹配所有路径（middleware 内部判断是否需要拦截）
+  // 匹配所有动态路径（自动排除带扩展名的静态资源）
   matcher: ["/((?!.*\\.).*)"],
 }
-

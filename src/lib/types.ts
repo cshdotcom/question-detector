@@ -81,6 +81,8 @@ export interface ImageItem {
   id: string
   name: string
   dataUrl: string
+  /** 缩略图（云端存储模式下列表加载用，长边 320） */
+  thumbnail?: string
   width: number
   height: number
   source: "camera" | "upload" | "merged"
@@ -92,6 +94,8 @@ export interface ImageItem {
   adjustments: ImageAdjustments
   /** 如果是合并图，记录原始图片 ID */
   mergedFrom?: string[]
+  /** 运行时标记：原图 dataUrl 是否已从云端加载（列表接口不含原图） */
+  dataLoaded?: boolean
 }
 
 /** 后端 VLM 返回的单道题目 */

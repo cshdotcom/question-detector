@@ -14,6 +14,7 @@ function LoginPageInner() {
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const [requiresPassword, setRequiresPassword] = useState(true)
+  const [usingCustomPassword, setUsingCustomPassword] = useState(false)
 
   useEffect(() => {
     // 查询是否需要密码；若不需要直接跳转
@@ -21,6 +22,7 @@ function LoginPageInner() {
       .then((r) => r.json())
       .then((data) => {
         setRequiresPassword(!!data.requiresPassword)
+        setUsingCustomPassword(!!data.usingCustomPassword)
         if (!data.requiresPassword) {
           router.replace(from)
         } else if (data.loggedIn) {
@@ -106,7 +108,9 @@ function LoginPageInner() {
         </form>
 
         <p className="text-[10px] text-muted-foreground text-center mt-6">
-          密码由部署者在 .env 的 APP_PASSWORD 中配置
+          {usingCustomPassword
+            ? "密码已由管理员修改，请联系管理员"
+            : "默认密码 123456（登录后可在「修改密码」中更改）"}
         </p>
       </div>
     </div>

@@ -76,6 +76,8 @@ export function useAutoDetect() {
           }
           setDetecting(imgId, true)
           try {
+            // 云端存储模式：识别前确保原图 dataUrl 已加载（恢复的图片可能懒加载未完成）
+            await useDetectorStore.getState().ensureImageData(imgId)
             const fresh = useDetectorStore.getState().images.find((x) => x.id === imgId) ?? im
             const qs = await detectQuestions(fresh, "ai", useDetectorStore.getState().aiConfig)
             // 再次检查图片是否还存在

@@ -88,7 +88,10 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
       toast.error("请至少选择一张图片")
       return
     }
-    const targets = images.filter((im) => selectedImageIds.has(im.id))
+    // 云端存储模式：导出前确保所选图片的原图已加载（配图裁剪/带框图需要）
+    const ensureImageData = useDetectorStore.getState().ensureImageData
+    await Promise.all([...selectedImageIds].map((id) => ensureImageData(id)))
+    const targets = useDetectorStore.getState().images.filter((im) => selectedImageIds.has(im.id))
     if (pendingAction) {
       await runExport(pendingAction, targets)
     }
@@ -716,7 +719,7 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
                       checked={checked}
                       onCheckedChange={() => toggleImage(im.id)}
                     />
-                    <img src={im.dataUrl} alt="" className="size-10 object-cover rounded shrink-0" />
+                    <img src={im.thumbnail || im.dataUrl} alt="" className="size-10 object-cover rounded shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium truncate">{im.name}</div>
                       <div className="text-[10px] text-muted-foreground">

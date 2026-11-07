@@ -20,6 +20,7 @@ export function BatchDetect() {
   const setDetecting = useDetectorStore((s) => s.setDetecting)
   const setQuestions = useDetectorStore((s) => s.setQuestions)
   const setCurrentImage = useDetectorStore((s) => s.setCurrentImage)
+  const ensureImageData = useDetectorStore((s) => s.ensureImageData)
   const [busy, setBusy] = useState(false)
 
   const runBatch = useCallback(
@@ -37,6 +38,8 @@ export function BatchDetect() {
         setCurrentImage(img.id)
         setDetecting(img.id, true)
         try {
+          // 云端存储模式：识别前确保原图已加载
+          await ensureImageData(img.id)
           // 取最新状态
           const fresh = useDetectorStore.getState().images.find((x) => x.id === img.id) ?? img
           const qs = await detectQuestions(fresh, method)
@@ -51,7 +54,7 @@ export function BatchDetect() {
       setBusy(false)
       toast.success(`批量识别完成：成功 ${ok} 张${fail > 0 ? `，失败 ${fail} 张` : ""}`)
     },
-    [images, setDetecting, setQuestions, setCurrentImage]
+    [images, setDetecting, setQuestions, setCurrentImage, ensureImageData]
   )
 
   if (images.length === 0) return null

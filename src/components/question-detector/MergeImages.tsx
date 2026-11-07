@@ -21,6 +21,7 @@ export function MergeImages() {
   const setDetecting = useDetectorStore((s) => s.setDetecting)
   const setQuestions = useDetectorStore((s) => s.setQuestions)
   const autoDetect = useDetectorStore((s) => s.autoDetect)
+  const ensureImageData = useDetectorStore((s) => s.ensureImageData)
 
   const doMerge = async () => {
     if (selectedImageIds.length < 2) {
@@ -29,7 +30,9 @@ export function MergeImages() {
     }
     setBusy(true)
     try {
-      const imgs = images.filter((im) => selectedImageIds.includes(im.id))
+      // 云端存储模式：合并前确保原图已加载
+      await Promise.all(selectedImageIds.map((id) => ensureImageData(id)))
+      const imgs = useDetectorStore.getState().images.filter((im) => selectedImageIds.includes(im.id))
       const merged = await mergeImageItems(imgs)
       const newId = addImage({
         name: `跨页合并 (${imgs.length}张)`,
@@ -94,7 +97,7 @@ export function MergeImages() {
               ) : (
                 <Square className="size-4 text-muted-foreground shrink-0" />
               )}
-              <img src={im.dataUrl} alt="" className="size-8 object-cover rounded shrink-0" />
+              <img src={im.thumbnail || im.dataUrl} alt="" className="size-8 object-cover rounded shrink-0" />
               <span className="truncate flex-1">{im.name}</span>
             </button>
           )

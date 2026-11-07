@@ -116,7 +116,6 @@ export function QuestionCanvas() {
       ro.disconnect()
       window.removeEventListener("resize", updateSize)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // 关键修复：直接监听主图元素尺寸。
@@ -478,7 +477,17 @@ export function QuestionCanvas() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-8">
         <ImageOff className="size-12 opacity-30" />
-        <p className="text-sm">请先从左侧选择一张图片，或拍照 / 上传新图片</p>
+        <p className="text-sm">还没有图片，点击「拍照」或「上传」开始</p>
+      </div>
+    )
+  }
+
+  // 云端存储模式：原图懒加载中（列表接口不含 dataUrl）
+  if (!currentImage.dataUrl) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3 p-8">
+        <Loader2 className="size-10 animate-spin opacity-50" />
+        <p className="text-sm">正在从云端加载原图…</p>
       </div>
     )
   }

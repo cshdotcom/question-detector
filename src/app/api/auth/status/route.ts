@@ -1,25 +1,31 @@
 import { NextResponse } from "next/server"
-import { createHash } from "crypto"
+import { db } from "@/lib/db"
+import { tokenFromHash } from "@/lib/auth-utils"
+import { getEffectiveHash } from "../login/route"
 
 export const runtime = "nodejs"
 
-/** 查询当前是否需要密码、是否已登录 */
+/** GET /api/auth/status — 查询是否启用密码（不暴露 hash） */
 export async function GET() {
-  const appPassword = (process.env.APP_PASSWORD || "").trim()
-  const requiresPassword = !!appPassword
-  return NextResponse.json({ requiresPassword })
-}
-
-export async function POST(req: Request) {
-  const token = req.headers.get("cookie") || ""
-  const appPassword = (process.env.APP_PASSWORD || "").trim()
-  if (!appPassword) {
+  const envPassword = (process.env.APP_PASSWORD ?? "").trim()
+  if (envPassword === "disabled") {
     return NextResponse.json({ requiresPassword: false, loggedIn: true })
   }
-  const salt = process.env.APP_PASSWORD_SALT || "question-detector-salt-2026"
-  const expected = createHash("sha256")
-    .update(`${appPassword}::${salt}`, "utf8")
-    .digest("hex")
-  const loggedIn = token.includes(`auth_token=${expected}`)
+  const row = await db.password.findUnique({ where: { id: 1 } })
+  return NextResponse.json({
+    requiresPassword: true,
+    usingCustomPassword: !!row?.hash, // 用户是否改过密码
+  })
+}
+
+/** POST /api/auth/status — 查询是否启用密码 + 当前是否已登录 */
+export async function POST(req: Request) {
+  const { hash, passwordEnabled } = await getEffectiveHash()
+  if (!passwordEnabled) {
+    return NextResponse.json({ requiresPassword: false, loggedIn: true })
+  }
+  const cookieHeader = req.headers.get("cookie") || ""
+  const token = /(?:^|;\s*)auth_token=([^;]+)/.exec(cookieHeader)?.[1]
+  const loggedIn = !!token && token === tokenFromHash(hash!)
   return NextResponse.json({ requiresPassword: true, loggedIn })
 }

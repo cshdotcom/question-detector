@@ -5,7 +5,16 @@ import { uid } from "./utils"
 import type { ImageItem, Question, BBox, ImageAdjustments, GradingResult, AIProviderConfig } from "./types"
 import { DEFAULT_ADJUSTMENTS } from "./types"
 import { saveAIConfig, DEFAULT_AI_CONFIG } from "./ai-config"
-import { saveImage, deleteImage, deleteImages, clearAllImages, loadAllImages } from "./image-db"
+import {
+  saveImage as cloudSaveImage,
+  patchImage as cloudPatchImage,
+  makeThumbnail,
+  deleteImage as cloudDeleteImage,
+  deleteImages as cloudDeleteImages,
+  clearAllImages as cloudClearAll,
+  loadAllImages,
+  loadImageData,
+} from "./cloud-db"
 
 interface HistoryEntry {
   images: ImageItem[]
@@ -27,7 +36,7 @@ interface DetectorState {
   sidebarOpen: boolean
   rightPanelOpen: boolean
   aiConfig: AIProviderConfig
-  // 是否已从 IndexedDB 恢复过
+  // 是否已从云端恢复过
   hydrated: boolean
 
   // 历史
@@ -46,8 +55,10 @@ interface DetectorState {
   setAIConfig: (cfg: AIProviderConfig) => void
   setGallerySelectMode: (v: boolean) => void
 
-  // 持久化
+  // 持久化（云端）
   hydrate: () => Promise<void>
+  /** 懒加载：原图 dataUrl 未加载时从云端拉取（列表接口不含原图） */
+  ensureImageData: (id: string) => Promise<void>
 
   // 图片管理
   addImage: (img: Omit<ImageItem, "id" | "questions" | "detected" | "detecting" | "createdAt" | "adjustments">) => string
@@ -93,6 +104,9 @@ interface DetectorState {
 }
 
 const MAX_HISTORY = 50
+
+/** 懒加载加载锁：避免同一张图并发重复拉取 */
+const loadingImages = new Set<string>()
 
 function snapshot(s: DetectorState): HistoryEntry {
   return {
@@ -165,7 +179,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
   },
   setGallerySelectMode: (v) => set({ gallerySelectMode: v, selectedImageIds: [] }),
 
-  // 从 IndexedDB 恢复图片
+  // 从云端恢复图片列表（不含原图，原图懒加载）
   hydrate: async () => {
     if (get().hydrated) return
     try {
@@ -175,15 +189,48 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         const restored = saved.map((im) => ({ ...im, detecting: false }))
         set({
           images: restored,
-          currentImageId: restored[0]?.id ?? null,
+          currentImageId: restored[restored.length - 1]?.id ?? null,
           hydrated: true,
         })
+        // 懒加载第一张原图，让画布立即可用
+        const firstId = restored[restored.length - 1]?.id
+        if (firstId) void get().ensureImageData(firstId)
       } else {
         set({ hydrated: true })
       }
     } catch (e) {
       console.warn("[hydrate] failed:", e)
       set({ hydrated: true })
+    }
+  },
+
+  // 懒加载原图：列表接口不含 dataUrl，切换到某张图时才拉取
+  ensureImageData: async (id) => {
+    const cur = get().images.find((x) => x.id === id)
+    if (!cur || (cur.dataLoaded && cur.dataUrl)) return
+    // 加载锁：避免并发重复拉取
+    if (loadingImages.has(id)) return
+    loadingImages.add(id)
+    try {
+      const full = await loadImageData(id)
+      if (!full) return
+      // 图片可能在加载期间被删除/替换，只有还存在时才写回
+      set((s) => ({
+        images: s.images.map((x) =>
+          x.id === id
+            ? {
+                ...x,
+                dataUrl: full.dataUrl,
+                width: full.width || x.width,
+                height: full.height || x.height,
+                thumbnail: full.thumbnail || x.thumbnail,
+                dataLoaded: true,
+              }
+            : x
+        ),
+      }))
+    } finally {
+      loadingImages.delete(id)
     }
   },
 
@@ -197,6 +244,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       createdAt: Date.now(),
       adjustments: { ...DEFAULT_ADJUSTMENTS },
       detectMethod: null,
+      dataLoaded: true,
       ...img,
     }
     set((s) => {
@@ -210,8 +258,18 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         future: [],
       }
     })
-    // 持久化到 IndexedDB
-    void saveImage(item)
+    // 持久化到云端（含缩略图生成，不阻塞 UI）
+    void (async () => {
+      try {
+        const thumbnail = await makeThumbnail(item.dataUrl)
+        set((s) => ({
+          images: s.images.map((x) => (x.id === id ? { ...x, thumbnail: x.thumbnail || thumbnail } : x)),
+        }))
+        await cloudSaveImage({ ...item, thumbnail })
+      } catch (e) {
+        console.warn("[addImage] cloud save failed:", e)
+      }
+    })()
     return id
   },
 
@@ -226,7 +284,7 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         selectedImageIds: s.selectedImageIds.filter((x) => x !== id),
       }
     })
-    void deleteImage(id)
+    void cloudDeleteImage(id)
   },
 
   removeImages: (ids) => {
@@ -244,15 +302,19 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         selectedImageIds: s.selectedImageIds.filter((x) => !idSet.has(x)),
       }
     })
-    void deleteImages(ids)
+    void cloudDeleteImages(ids)
   },
 
   clearAll: () => {
     get().commit(() => ({ images: [], currentImageId: null, selectedQuestionId: null, selectedImageIds: [] }))
-    void clearAllImages()
+    void cloudClearAll()
   },
 
-  setCurrentImage: (id) => set({ currentImageId: id, selectedQuestionId: null }),
+  setCurrentImage: (id) => {
+    set({ currentImageId: id, selectedQuestionId: null })
+    // 懒加载原图（dataUrl 未加载时）
+    if (id) void get().ensureImageData(id)
+  },
 
   toggleSelectImage: (id) =>
     set((s) => ({
@@ -278,9 +340,15 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
         future: [],
       }
     })
-    // 持久化到 IndexedDB
+    // 持久化到云端（题目 + 识别状态）
     const updated = get().images.find((x) => x.id === imageId)
-    if (updated) void saveImage(updated)
+    if (updated) {
+      void cloudPatchImage(imageId, {
+        questions: updated.questions,
+        detected: updated.detected,
+        detectMethod: updated.detectMethod ?? "",
+      })
+    }
   },
 
   addQuestion: (imageId, q) => {
@@ -464,9 +532,25 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
     get().commit((s) => ({
       images: s.images.map((x) => (x.id === imageId ? { ...x, ...data } : x)),
     }))
-    // 持久化到 IndexedDB
-    const updated = get().images.find((x) => x.id === imageId)
-    if (updated) void saveImage(updated)
+    // 持久化到云端：图片本体 + 尺寸 + 同步更新缩略图
+    void (async () => {
+      const updated = get().images.find((x) => x.id === imageId)
+      if (!updated) return
+      try {
+        const thumbnail = await makeThumbnail(updated.dataUrl)
+        set((s) => ({
+          images: s.images.map((x) => (x.id === imageId ? { ...x, thumbnail: thumbnail || x.thumbnail } : x)),
+        }))
+        await cloudPatchImage(imageId, {
+          dataUrl: updated.dataUrl,
+          width: updated.width,
+          height: updated.height,
+          thumbnail,
+        })
+      } catch (e) {
+        console.warn("[replaceImageData] cloud save failed:", e)
+      }
+    })()
   },
 
   getCurrentImage: () => {
@@ -484,7 +568,7 @@ export function sanitizeBBox(b: Partial<BBox>): BBox {
   return { x, y, width: w, height: h }
 }
 
-/** 防抖持久化某张图片到 IndexedDB（用于拖拽/编辑等高频更新场景） */
+/** 防抖持久化某张图片的题目数据到云端（用于拖拽/编辑等高频更新场景） */
 const persistDebounce = new Map<string, ReturnType<typeof setTimeout>>()
 export function persistImageDebounced(imageId: string, delay = 800) {
   const existing = persistDebounce.get(imageId)
@@ -492,7 +576,12 @@ export function persistImageDebounced(imageId: string, delay = 800) {
   const timer = setTimeout(() => {
     persistDebounce.delete(imageId)
     const img = useDetectorStore.getState().images.find((x) => x.id === imageId)
-    if (img) void saveImage(img)
+    if (img) {
+      void cloudPatchImage(imageId, {
+        questions: img.questions,
+        adjustments: img.adjustments,
+      })
+    }
   }, delay)
   persistDebounce.set(imageId, timer)
 }

@@ -40,6 +40,11 @@ const PROMPT = `你是一个题目识别助手。下面这张图是用户拍摄�
 8. 只输出 JSON 数组本身，不要包装，不要解释。
 9. 如果一道题目在当前页未结束（延续到下一页），请在该项中加 "crossPageContinues": true；
    如果是上一页的延续，请加 "crossPageContinued": true。
+10. bbox 坐标精度非常重要（框会被叠加到原图上供用户核对和裁剪）：
+   - bbox 必须精确覆盖该题完整区域：从题号（或题干首行）的顶部开始，到该题最后一行（含选项行）的底部结束
+   - 上下左右留白不超过半行高，严禁框入上一题或下一题的内容
+   - bbox 使用相对坐标（0~1），例如某题起始于图片高度 32% 处、占 8% 高度，则 y=0.32、height=0.08
+11. 阅读理解的文章 passage 的 bbox 只覆盖文章正文本身，不包含后面的题目。
 
 示例输出：
 [{"number":"","content":"Read the following passage and answer the questions...","bbox":{"x":0.05,"y":0.05,"width":0.90,"height":0.40},"kind":"passage","images":[]},{"number":"1","content":"What is the main idea?","bbox":{"x":0.05,"y":0.50,"width":0.90,"height":0.08},"kind":"passage_question","images":[]},{"number":"2","content":"计算 $x^2 + 2x + 1 = 0$ 的解。","bbox":{"x":0.05,"y":0.60,"width":0.90,"height":0.10},"kind":"normal","images":[{"bbox":{"x":0.30,"y":0.65,"width":0.40,"height":0.20},"caption":"函数图像"}]}]`

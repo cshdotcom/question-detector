@@ -342,18 +342,28 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
           q.content.split("\n").forEach((line) =>
             children.push(new Paragraph({ text: line || " " }))
           )
-          // 题目截图（可选）
+          // 题目截图（可选，不含配图）
           if (optIncludeImage) {
           try {
             const dataUrl = await cropToDataUrl(img, q.bbox, 800, true)
             const base64 = dataUrl.split(",")[1]
+            // 按实际裁剪比例计算宽高，避免拉伸变形
+            const shot = await loadImageLocal(dataUrl)
+            const maxW = 480
+            const maxH = 620
+            let dw = maxW
+            let dh = Math.round(maxW * (shot.naturalHeight / shot.naturalWidth))
+            if (dh > maxH) {
+              dh = maxH
+              dw = Math.round(maxH * (shot.naturalWidth / shot.naturalHeight))
+            }
             children.push(
               new Paragraph({
                 alignment: AlignmentType.CENTER,
                 children: [
                   new ImageRun({
                     data: Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
-                    transformation: { width: 480, height: 180 },
+                    transformation: { width: dw, height: dh },
                   }),
                 ],
               })
@@ -369,13 +379,22 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
               const subDataUrl = si.dataUrl ?? (await cropToDataUrl(img, si.bbox, 600, true))
               if (subDataUrl) {
                 const base64 = subDataUrl.split(",")[1]
+                const subShot = await loadImageLocal(subDataUrl)
+                const subMaxW = 300
+                const subMaxH = 360
+                let sdw = subMaxW
+                let sdh = Math.round(subMaxW * (subShot.naturalHeight / subShot.naturalWidth))
+                if (sdh > subMaxH) {
+                  sdh = subMaxH
+                  sdw = Math.round(subMaxH * (subShot.naturalWidth / subShot.naturalHeight))
+                }
                 children.push(
                   new Paragraph({
                     alignment: AlignmentType.CENTER,
                     children: [
                       new ImageRun({
                         data: Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)),
-                        transformation: { width: 280, height: 200 },
+                        transformation: { width: sdw, height: sdh },
                       }),
                     ],
                   })
@@ -666,11 +685,11 @@ export function ExportMenu({ currentImageOnly = false }: ExportMenuProps) {
               <div className="text-xs font-medium text-muted-foreground">导出内容（PDF / Word / 题目截图）</div>
               <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeImage(!optIncludeImage)}>
                 <Checkbox checked={optIncludeImage} onCheckedChange={(v) => setOptIncludeImage(!!v)} />
-                <span className="text-sm">包含题目原图截图</span>
+                <span className="text-sm">题目原图截图<span className="text-xs text-muted-foreground">（不含配图）</span></span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeSubImages(!optIncludeSubImages)}>
                 <Checkbox checked={optIncludeSubImages} onCheckedChange={(v) => setOptIncludeSubImages(!!v)} />
-                <span className="text-sm">包含题目内配图</span>
+                <span className="text-sm">题目内配图<span className="text-xs text-muted-foreground">（几何图/表格等）</span></span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer" onClick={() => setOptIncludeGrading(!optIncludeGrading)}>
                 <Checkbox checked={optIncludeGrading} onCheckedChange={(v) => setOptIncludeGrading(!!v)} />

@@ -327,7 +327,9 @@ export default function Home() {
               ["+ / =", "放大画布"],
               ["-", "缩小画布"],
               ["0", "重置缩放"],
-              ["双击空白处", "在该位置新建框"],
+              ["拖拽空白处", "自由框选新题目"],
+              ["双击空白处", "快速新建默认框"],
+              ["点击已批改的框", "查看批改解析"],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center justify-between py-1 border-b last:border-0">
                 <span className="text-muted-foreground">{v}</span>

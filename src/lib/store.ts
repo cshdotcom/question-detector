@@ -52,6 +52,10 @@ interface DetectorState {
   setQuestions: (imageId: string, questions: Question[], method?: "ai" | "offline") => void
   addQuestion: (imageId: string, q?: Partial<Question>) => string
   updateQuestion: (imageId: string, qid: string, patch: Partial<Question>) => void
+  /** 实时更新（不写撤销历史，用于拖拽/输入过程） */
+  updateQuestionLive: (imageId: string, qid: string, patch: Partial<Question>) => void
+  /** 手动压入一次撤销快照（拖拽手势开始时调用一次） */
+  pushHistory: () => void
   removeQuestion: (imageId: string, qid: string) => void
   selectQuestion: (qid: string | null) => void
 
@@ -70,6 +74,9 @@ interface DetectorState {
   // 图像调整
   setAdjustments: (imageId: string, adj: Partial<ImageAdjustments>) => void
   resetAdjustments: (imageId: string) => void
+
+  /** 替换图片数据（旋转/去手写/高清增强后），支持撤销 */
+  replaceImageData: (imageId: string, data: { dataUrl: string; width: number; height: number }) => void
 
   // 工具
   getCurrentImage: () => ImageItem | undefined
@@ -258,6 +265,26 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       }
     }),
 
+  updateQuestionLive: (imageId, qid, patch) =>
+    set((s) => ({
+      images: s.images.map((x) =>
+        x.id === imageId
+          ? {
+              ...x,
+              questions: x.questions.map((q) => (q.id === qid ? { ...q, ...patch } : q)),
+            }
+          : x
+      ),
+    })),
+
+  pushHistory: () =>
+    set((s) => {
+      const snap = snapshot(s)
+      const newPast = [...s.past, snap]
+      if (newPast.length > MAX_HISTORY) newPast.shift()
+      return { past: newPast, future: [] }
+    }),
+
   removeQuestion: (imageId, qid) =>
     get().commit((s) => ({
       images: s.images.map((x) =>
@@ -359,6 +386,11 @@ export const useDetectorStore = create<DetectorState>((set, get) => ({
       images: s.images.map((x) =>
         x.id === imageId ? { ...x, adjustments: { ...DEFAULT_ADJUSTMENTS } } : x
       ),
+    })),
+
+  replaceImageData: (imageId, data) =>
+    get().commit((s) => ({
+      images: s.images.map((x) => (x.id === imageId ? { ...x, ...data } : x)),
     })),
 
   getCurrentImage: () => {

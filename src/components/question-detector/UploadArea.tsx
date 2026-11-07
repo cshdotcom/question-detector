@@ -4,6 +4,7 @@ import { useRef, useState, useCallback } from "react"
 import { Upload, FileImage, Loader2, CheckCircle2 } from "lucide-react"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
+import { normalizeUploadImage } from "@/lib/image-utils"
 
 interface UploadAreaProps {
   compact?: boolean
@@ -29,8 +30,8 @@ export function UploadArea({ compact }: UploadAreaProps) {
         }
         try {
           const dataUrl = await readAsDataURL(file)
-          const dim = await getImageSize(dataUrl)
-          const { dataUrl: finalDataUrl, width, height } = await maybeCompress(dataUrl, dim.width, dim.height)
+          // 归一化：剥离 EXIF 方向（避免显示与 AI 识别方向不一致导致框错位），限制最大边 2000
+          const { dataUrl: finalDataUrl, width, height } = await normalizeUploadImage(dataUrl)
           const id = addImage({
             name: file.name,
             dataUrl: finalDataUrl,
@@ -128,45 +129,4 @@ function readAsDataURL(file: File): Promise<string> {
     reader.onerror = () => reject(new Error("读取文件失败"))
     reader.readAsDataURL(file)
   })
-}
-
-function getImageSize(dataUrl: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
-    img.onerror = () => reject(new Error("图片解码失败"))
-    img.src = dataUrl
-  })
-}
-
-async function maybeCompress(
-  dataUrl: string,
-  w: number,
-  h: number
-): Promise<{ dataUrl: string; width: number; height: number }> {
-  const maxSide = 2000
-  if (Math.max(w, h) <= maxSide) return { dataUrl, width: w, height: h }
-  const ratio = w / h
-  let nw = w
-  let nh = h
-  if (w >= h) {
-    nw = maxSide
-    nh = Math.round(maxSide / ratio)
-  } else {
-    nh = maxSide
-    nw = Math.round(maxSide * ratio)
-  }
-  const canvas = document.createElement("canvas")
-  canvas.width = nw
-  canvas.height = nh
-  const ctx = canvas.getContext("2d")
-  if (!ctx) return { dataUrl, width: w, height: h }
-  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const im = new Image()
-    im.onload = () => resolve(im)
-    im.onerror = reject
-    im.src = dataUrl
-  })
-  ctx.drawImage(img, 0, 0, nw, nh)
-  return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: nw, height: nh }
 }

@@ -261,3 +261,245 @@ export function buildExportData(images: ImageItem[]) {
 export function makeSubImage(bbox: BBox, caption?: string): SubImage {
   return { id: uid("sub"), bbox, caption }
 }
+
+/** 上传图片归一化：经 canvas 重绘以剥离 EXIF 方向信息（避免"显示是正的、AI 识别却是横的"导致框错位），
+ *  同时限制最大边长 2000，统一转为 JPEG */
+export async function normalizeUploadImage(
+  dataUrl: string
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const img = await loadImage(dataUrl)
+  const w = img.naturalWidth
+  const h = img.naturalHeight
+  if (!w || !h) return { dataUrl, width: w || 1, height: h || 1 }
+  const MAX = 2000
+  const scale = Math.max(w, h) > MAX ? MAX / Math.max(w, h) : 1
+  const cw = Math.max(1, Math.round(w * scale))
+  const ch = Math.max(1, Math.round(h * scale))
+  const canvas = document.createElement("canvas")
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return { dataUrl, width: w, height: h }
+  ctx.fillStyle = "#ffffff"
+  ctx.fillRect(0, 0, cw, ch)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = "high"
+  ctx.drawImage(img, 0, 0, cw, ch)
+  return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: cw, height: ch }
+}
+
+/** 把图片旋转指定角度（0/90/180/270）并烘焙为新 dataUrl。
+ *  旋转直接写进像素，保证 AI 识别 / 批改 / 裁剪 / 导出看到的都是同一方向 */
+export async function rotateImage(
+  dataUrl: string,
+  rotation: number
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const img = await loadImage(dataUrl)
+  const r = (((rotation % 360) + 360) % 360) / 90 // 0~3
+  const w = img.naturalWidth
+  const h = img.naturalHeight
+  if (r === 0) return { dataUrl, width: w, height: h }
+  const swap = r === 1 || r === 3
+  const cw = swap ? h : w
+  const ch = swap ? w : h
+  const canvas = document.createElement("canvas")
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return { dataUrl, width: w, height: h }
+  ctx.translate(cw / 2, ch / 2)
+  ctx.rotate((r * 90 * Math.PI) / 180)
+  ctx.drawImage(img, -w / 2, -h / 2)
+  return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), width: cw, height: ch }
+}
+
+/** 本地快速去除彩色笔迹（红/蓝/绿笔的批改、勾叉、圈画、手写答案）：
+ *  HSV 颜色分割出彩色笔画 → 掩膜膨胀（带走抗锯齿边）→ 从周边背景扩散修补。
+ *  纯本地处理，不调用 AI，绝不改动印刷内容 */
+export async function removeColoredMarksFromImage(
+  img: ImageItem
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const image = await loadImage(img.dataUrl)
+  const w = image.naturalWidth
+  const h = image.naturalHeight
+  const canvas = document.createElement("canvas")
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
+  if (!ctx) throw new Error("画布初始化失败")
+  ctx.drawImage(image, 0, 0)
+  const imageData = ctx.getImageData(0, 0, w, h)
+  const data = imageData.data
+  const n = w * h
+
+  // 1. 构建彩色笔迹掩膜：印刷文字接近黑/灰（低饱和度），纸张背景高亮度低饱和度，
+  //    彩色笔（红/蓝/绿/橙）饱和度高
+  const mask = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    const r = data[i * 4]
+    const g = data[i * 4 + 1]
+    const b = data[i * 4 + 2]
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const v = max / 255
+    const s = max === 0 ? 0 : (max - min) / max
+    // 饱和度较高的彩色像素（排除黑字与白纸），且不是过暗（接近印刷黑）或过亮泛白
+    const isColored = s > 0.28 && v > 0.18 && v < 0.97
+    // 深红笔（暗但很红）
+    const isDeepRed = r > 100 && r - g > 60 && r - b > 60
+    if (isColored || isDeepRed) mask[i] = 1
+  }
+
+  // 2. 掩膜膨胀 2 圈（半径约 2px），带走抗锯齿边缘
+  let mask2 = mask
+  for (let pass = 0; pass < 2; pass++) {
+    const next = new Uint8Array(n)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        if (mask2[i]) {
+          next[i] = 1
+          continue
+        }
+        let hit = 0
+        for (let dy = -1; dy <= 1 && !hit; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx
+            const ny = y + dy
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+            if (mask2[ny * w + nx]) {
+              hit = 1
+              break
+            }
+          }
+        }
+        if (hit) next[i] = 1
+      }
+    }
+    mask2 = next
+  }
+
+  let markedCount = 0
+  for (let i = 0; i < n; i++) if (mask2[i]) markedCount++
+  if (markedCount === 0) {
+    // 没有检测到彩色笔迹
+    return { dataUrl: img.dataUrl, width: w, height: h }
+  }
+
+  // 3. 扩散修补（onion-peel BFS）：从掩膜边界向内逐层用有效邻居均值填充
+  const filled = new Uint8Array(n) // 1 = 已填充
+  const queue: number[] = []
+  // 初始化：掩膜外像素都是有效的
+  for (let i = 0; i < n; i++) if (!mask2[i]) filled[i] = 1
+  // 找掩膜中与有效像素相邻的作为第一层
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x
+      if (!mask2[i]) continue
+      if (
+        (x > 0 && filled[i - 1]) ||
+        (x < w - 1 && filled[i + 1]) ||
+        (y > 0 && filled[i - w]) ||
+        (y < h - 1 && filled[i + w])
+      ) {
+        queue.push(i)
+      }
+    }
+  }
+  let head = 0
+  while (head < queue.length) {
+    const i = queue[head++]
+    if (filled[i]) continue
+    let rs = 0
+    let gs = 0
+    let bs = 0
+    let cnt = 0
+    const x = i % w
+    const y = (i / w) | 0
+    if (x > 0 && filled[i - 1]) { rs += data[(i - 1) * 4]; gs += data[(i - 1) * 4 + 1]; bs += data[(i - 1) * 4 + 2]; cnt++ }
+    if (x < w - 1 && filled[i + 1]) { rs += data[(i + 1) * 4]; gs += data[(i + 1) * 4 + 1]; bs += data[(i + 1) * 4 + 2]; cnt++ }
+    if (y > 0 && filled[i - w]) { rs += data[(i - w) * 4]; gs += data[(i - w) * 4 + 1]; bs += data[(i - w) * 4 + 2]; cnt++ }
+    if (y < h - 1 && filled[i + w]) { rs += data[(i + w) * 4]; gs += data[(i + w) * 4 + 1]; bs += data[(i + w) * 4 + 2]; cnt++ }
+    if (cnt > 0) {
+      data[i * 4] = rs / cnt
+      data[i * 4 + 1] = gs / cnt
+      data[i * 4 + 2] = bs / cnt
+      data[i * 4 + 3] = 255
+      filled[i] = 1
+      // 把未填充邻居入队
+      if (x > 0 && mask2[i - 1] && !filled[i - 1]) queue.push(i - 1)
+      if (x < w - 1 && mask2[i + 1] && !filled[i + 1]) queue.push(i + 1)
+      if (y > 0 && mask2[i - w] && !filled[i - w]) queue.push(i - w)
+      if (y < h - 1 && mask2[i + w] && !filled[i + w]) queue.push(i + w)
+    }
+  }
+  // 兜底：仍没填上的（理论上不会有）填白色
+  for (let i = 0; i < n; i++) {
+    if (mask2[i] && !filled[i]) {
+      data[i * 4] = 255
+      data[i * 4 + 1] = 255
+      data[i * 4 + 2] = 255
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+  return { dataUrl: canvas.toDataURL("image/jpeg", 0.94), width: w, height: h }
+}
+
+/** AI 去除手写：把调整(旋转/滤镜)烘焙进图 → 发送到后端图像编辑 API →
+ *  结果等比缩放回发送尺寸（保证题目框坐标不乱） */
+export async function removeHandwritingFromImage(
+  img: ImageItem
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const adj = img.adjustments
+  const hasAdjustments =
+    adj.rotation !== 0 || adj.brightness !== 1 || adj.contrast !== 1 || adj.saturate !== 1
+  let src = img.dataUrl
+  if (hasAdjustments) src = await renderImageWithAdjustments(img)
+
+  // 缩小到 ≤1440（编辑 API 的最大输出档），降低上传体积与耗时
+  const image = await loadImage(src)
+  const MAX = 1440
+  const scale = Math.max(image.naturalWidth, image.naturalHeight) > MAX
+    ? MAX / Math.max(image.naturalWidth, image.naturalHeight)
+    : 1
+  const cw = Math.max(1, Math.round(image.naturalWidth * scale))
+  const ch = Math.max(1, Math.round(image.naturalHeight * scale))
+  const sendCanvas = document.createElement("canvas")
+  sendCanvas.width = cw
+  sendCanvas.height = ch
+  const sctx = sendCanvas.getContext("2d")
+  if (!sctx) throw new Error("画布初始化失败")
+  sctx.fillStyle = "#ffffff"
+  sctx.fillRect(0, 0, cw, ch)
+  sctx.imageSmoothingQuality = "high"
+  sctx.drawImage(image, 0, 0, cw, ch)
+  const sendDataUrl = sendCanvas.toDataURL("image/jpeg", 0.9)
+
+  const resp = await fetch("/api/remove-handwriting", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: sendDataUrl, width: cw, height: ch }),
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (!resp.ok || !data?.ok) {
+    throw new Error(data?.error || `HTTP ${resp.status}`)
+  }
+  if (typeof data.dataUrl !== "string" || !data.dataUrl.startsWith("data:")) {
+    throw new Error("图像编辑 API 返回异常")
+  }
+
+  // 结果缩放回发送时的尺寸：题目框、配图框的相对坐标保持有效
+  const cleaned = await loadImage(data.dataUrl)
+  const out = document.createElement("canvas")
+  out.width = cw
+  out.height = ch
+  const octx = out.getContext("2d")
+  if (!octx) throw new Error("画布初始化失败")
+  octx.fillStyle = "#ffffff"
+  octx.fillRect(0, 0, cw, ch)
+  octx.imageSmoothingEnabled = true
+  octx.imageSmoothingQuality = "high"
+  octx.drawImage(cleaned, 0, 0, cw, ch)
+  return { dataUrl: out.toDataURL("image/jpeg", 0.92), width: cw, height: ch }
+}

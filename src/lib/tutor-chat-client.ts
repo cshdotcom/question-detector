@@ -29,17 +29,18 @@ export interface SendChatOptions {
   message: string
   config?: import("./types").AIProviderConfig
   regenerate?: boolean
+  images?: string[]  // dataUrl 数组
   signal?: AbortSignal  // 外部传入的 abort signal
 }
 
 export async function sendTutorChat(opts: SendChatOptions, cb: ChatCallbacks): Promise<void> {
-  const { sessionId, message, config, regenerate } = opts
+  const { sessionId, message, config, regenerate, images } = opts
   cb.onStart?.()
   try {
     const resp = await authFetch(`/api/tutor/sessions/${sessionId}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, config, regenerate }),
+      body: JSON.stringify({ message, config, regenerate, images }),
       signal: opts.signal,
     })
     if (!resp.ok || !resp.body) {

@@ -29,6 +29,7 @@ interface TutorSessionDetail {
   knowledgeCards: unknown[]
   visualBoards: unknown[]
   status: string
+  archived: boolean
   createdAt: number
   updatedAt: number
 }
@@ -36,7 +37,7 @@ interface TutorSessionDetail {
 function rowToDetail(row: {
   id: string; type: string; title: string; imageId: string; questionIdx: number;
   questionSnapshot: string; imageCrop: string; messages: string; stage: number;
-  knowledgeCards: string; visualBoards: string; status: string;
+  knowledgeCards: string; visualBoards: string; status: string; archived: boolean;
   createdAt: Date; updatedAt: Date;
 }): TutorSessionDetail {
   let q: Question = {} as Question
@@ -51,7 +52,8 @@ function rowToDetail(row: {
     id: row.id, type: row.type, title: row.title, imageId: row.imageId,
     questionIdx: row.questionIdx, questionSnapshot: q, imageCrop: row.imageCrop,
     messages: msgs, stage: row.stage, knowledgeCards: cards, visualBoards: boards,
-    status: row.status, createdAt: row.createdAt.getTime(), updatedAt: row.updatedAt.getTime(),
+    status: row.status, archived: row.archived,
+    createdAt: row.createdAt.getTime(), updatedAt: row.updatedAt.getTime(),
   }
 }
 
@@ -75,6 +77,7 @@ interface UpdateBody {
   knowledgeCards?: unknown[]
   visualBoards?: unknown[]
   status?: string
+  archived?: boolean
 }
 
 /** PUT /api/tutor/sessions/[id] — 更新 */
@@ -93,6 +96,7 @@ export async function PUT(req: Request, ctx: RouteCtx) {
         ...(body.knowledgeCards !== undefined ? { knowledgeCards: JSON.stringify(body.knowledgeCards) } : {}),
         ...(body.visualBoards !== undefined ? { visualBoards: JSON.stringify(body.visualBoards) } : {}),
         ...(body.status !== undefined ? { status: body.status } : {}),
+        ...(body.archived !== undefined ? { archived: body.archived } : {}),
       },
     })
     return NextResponse.json({ ok: true })

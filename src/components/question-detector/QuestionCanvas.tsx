@@ -37,6 +37,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Markdown } from "@/components/markdown/Markdown"
@@ -454,6 +455,64 @@ export function QuestionCanvas() {
     }
   }, [currentImage, cleaning, replaceImageData, resetAdjustments, setQuestions])
 
+  // AI 深度修复：先 VLM 擦除 → 再调 image-edit API 重绘擦除区域 → 前端合成
+  const onAIDeepRepair = useCallback(async () => {
+    if (!currentImage || cleaning) return
+    setCleaning(true)
+    toast.info("AI 深度修复中：先识别擦除，再重绘修复，约需 20~60 秒…")
+    try {
+      const { removeHandwritingFromImage, fillAllQuestionImages } = await import("@/lib/image-utils")
+      const { authFetch } = await import("@/lib/auth-fetch")
+      // 1. 先做本地 VLM 擦除
+      const eraseResult = await removeHandwritingFromImage(currentImage)
+      if (eraseResult.boxes.length === 0) {
+        toast.info("未检测到手写痕迹，无需修复")
+        replaceImageData(currentImage.id, eraseResult)
+        return
+      }
+      // 先应用擦除结果
+      replaceImageData(currentImage.id, eraseResult)
+      resetAdjustments(currentImage.id)
+      toast.info("本地擦除完成，正在调用 AI 深度修复…")
+      // 2. 调用 AI 修复 API
+      const repairResp = await authFetch("/api/erase-repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: eraseResult.originalDataUrl,
+          erasedImage: eraseResult.dataUrl,
+          boxes: eraseResult.boxes,
+        }),
+      })
+      const repairData = await repairResp.json().catch(() => ({}))
+      if (!repairResp.ok || !repairData?.ok) {
+        throw new Error(repairData?.error || `修复失败 HTTP ${repairResp.status}`)
+      }
+      // 3. 前端合成：bbox 内用 AI 图，bbox 外用原图
+      const compositeResult = await compositeErasedImage(
+        eraseResult.originalDataUrl,
+        repairData.aiImage,
+        eraseResult.boxes,
+        eraseResult.width,
+        eraseResult.height
+      )
+      replaceImageData(currentImage.id, compositeResult)
+      // 重新填充配图
+      if (currentImage.questions.some((q) => q.images.length > 0)) {
+        const fresh = useDetectorStore.getState().images.find((x) => x.id === currentImage.id)
+        if (fresh) {
+          const qs = await fillAllQuestionImages(fresh)
+          setQuestions(currentImage.id, qs, fresh.detectMethod ?? "ai")
+        }
+      }
+      toast.success("AI 深度修复完成，擦除区域已自然重绘")
+    } catch (e) {
+      toast.error(`AI 修复失败：${(e as Error).message}`)
+    } finally {
+      setCleaning(false)
+    }
+  }, [currentImage, cleaning, replaceImageData, resetAdjustments, setQuestions])
+
   const onDoubleClick = useCallback(
     (e: React.MouseEvent) => {
       if (!currentImage) return
@@ -560,6 +619,14 @@ export function QuestionCanvas() {
               <div className="flex flex-col">
                 <span className="text-sm">AI 深度去手写</span>
                 <span className="text-[10px] text-muted-foreground">10~40 秒：可去铅笔/黑色手写，适合复杂卷面</span>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onAIDeepRepair} className="py-2">
+              <Wand2 className="size-4 mr-2 shrink-0 text-violet-500" />
+              <div className="flex flex-col">
+                <span className="text-sm">AI 深度修复（重绘）</span>
+                <span className="text-[10px] text-muted-foreground">20~60 秒：先擦除再用 AI 重绘擦除区域，最自然</span>
               </div>
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -906,4 +973,54 @@ function handleCursor(h: ResizeHandle): string {
     w: "cursor-ew-resize",
   }
   return map[h]
+}
+
+/** 合成图片：bbox 内用 AI 图，bbox 外用原图
+ *  用于 AI 深度修复：保证印刷题目（bbox 外）字节级不变，bbox 内用 AI 重绘结果 */
+async function compositeErasedImage(
+  originalDataUrl: string,
+  aiDataUrl: string,
+  boxes: { x: number; y: number; width: number; height: number }[],
+  width: number,
+  height: number
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const origImg = new Image()
+    const aiImg = new Image()
+    let loaded = 0
+    const onLoad = () => {
+      loaded++
+      if (loaded < 2) return
+      const canvas = document.createElement("canvas")
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return reject(new Error("画布初始化失败"))
+      // 先画原图
+      ctx.drawImage(origImg, 0, 0, width, height)
+      // 在 bbox 区域内画 AI 图（用 clip 限制绘制区域）
+      for (const b of boxes) {
+        const x = b.x * width
+        const y = b.y * height
+        const w = b.width * width
+        const h = b.height * height
+        // 膨胀 5px 确保覆盖边缘
+        const pad = 5
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(x - pad, y - pad, w + pad * 2, h + pad * 2)
+        ctx.clip()
+        // AI 图可能尺寸不同，缩放到 width×height
+        ctx.drawImage(aiImg, 0, 0, aiImg.naturalWidth, aiImg.naturalHeight, 0, 0, width, height)
+        ctx.restore()
+      }
+      resolve({ dataUrl: canvas.toDataURL("image/png"), width, height })
+    }
+    origImg.onload = onLoad
+    aiImg.onload = onLoad
+    origImg.onerror = () => reject(new Error("原图加载失败"))
+    aiImg.onerror = () => reject(new Error("AI 图加载失败"))
+    origImg.src = originalDataUrl
+    aiImg.src = aiDataUrl
+  })
 }

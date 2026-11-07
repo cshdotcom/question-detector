@@ -37,21 +37,44 @@ model Password {
 // AI 辅导会话（解题模式 + 讲题模式）
 // 一道题（imageId + questionIdx）可对应多个会话
 model TutorSession {
-  id           String   @id
-  type         String   // "solve" | "lecture"
-  title        String   // 显示标题，通常从题目内容截取
-  imageId      String   // 关联 StoredImage.id
-  questionIdx  Int      @default(0) // 题目在 image.questions 数组中的索引
-  questionSnapshot String @default("") // 创建时的题目内容快照（JSON：number/content/bbox/kind）
-  imageCrop    String   @default("") // 题目截图 dataUrl（cropped from image）
-  messages     String   @default("[]") // ChatMessage[] JSON
-  stage        Int      @default(0) // 解题模式：当前阶段 0~6
-  knowledgeCards String @default("[]") // 知识卡片 JSON（含 SVG）
-  visualBoards String  @default("[]") // 讲题模式生成的 HTML 画板列表
-  status       String   @default("active") // active | completed | archived
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @default(now()) @updatedAt
+  id              String   @id
+  type            String   // "solve" | "lecture"
+  title           String   // 显示标题，通常从题目内容截取
+  imageId         String   // 关联 StoredImage.id
+  questionIdx     Int      @default(0) // 题目在 image.questions 数组中的索引
+  questionSnapshot String  @default("") // 创建时的题目内容快照（JSON：number/content/bbox/kind）
+  imageCrop       String   @default("") // 题目截图 dataUrl（cropped from image）
+  messages        String   @default("[]") // ChatMessage[] JSON
+  stage           Int      @default(0) // 解题模式：当前阶段 0~6
+  knowledgeCards  String   @default("[]") // 知识卡片 JSON（含 SVG）
+  visualBoards    String   @default("[]") // 讲题模式生成的 HTML 画板列表
+  status          String   @default("active") // active | completed
+  archived        Boolean  @default(false) // 归档（不删只隐藏）
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
 
   @@index([imageId])
+  @@index([createdAt])
+  @@index([archived])
+}
+
+// 独立白板（/tutor/whiteboard 页面创建的画板）
+// 可关联 tutor session 也可独立存在
+model Whiteboard {
+  id              String   @id
+  title           String   @default("未命名画板")
+  // 画板数据：JSON 序列化的笔迹/形状/文本数组
+  // 每项包含 type(stroke/shape/text/eraser)、points/color/width 等字段
+  strokes         String   @default("[]") // Stroke[] JSON
+  backgroundImage String   @default("") // 背景图 dataUrl（可选，如题目截图）
+  width           Int      @default(1200) // 画布宽度
+  height          Int      @default(800) // 画布高度
+  // 可选：关联辅导会话（聊天内嵌白板时关联）
+  sessionId       String   @default("") // 关联 TutorSession.id
+  thumbnail       String   @default("") // 缩略图 dataUrl
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @default(now()) @updatedAt
+
+  @@index([sessionId])
   @@index([createdAt])
 }

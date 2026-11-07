@@ -21,12 +21,14 @@ interface ChatMessage {
   timestamp: number
   stage?: number
   meta?: Record<string, unknown>
+  images?: string[] // dataUrl 数组：用户在聊天中上传的图片附件
 }
 
 interface ChatBody {
   message: string
   config?: AIProviderConfig
   regenerate?: boolean  // 重新生成最后一条 assistant 消息
+  images?: string[]  // 本次消息附带的新图片 dataUrl
 }
 
 /** 把会话历史转换为 AI 消息格式（截断到最近 20 条避免上下文过长） */
@@ -60,7 +62,18 @@ function buildHistory(session: { type: string; questionSnapshot: string; message
     const recent = historyMsgs.slice(-20)
     for (const m of recent) {
       if (m.role === "user") {
-        aiMessages.push({ role: "user", content: m.content })
+        // 如果用户消息有附图，用 multimodal 格式
+        if (m.images && m.images.length > 0) {
+          aiMessages.push({
+            role: "user",
+            content: [
+              { type: "text", text: m.content },
+              ...m.images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+            ],
+          })
+        } else {
+          aiMessages.push({ role: "user", content: m.content })
+        }
       } else {
         aiMessages.push({ role: "assistant", content: m.content })
       }
@@ -105,8 +118,22 @@ export async function POST(req: Request, ctx: RouteCtx) {
   try { history = JSON.parse(session.messages || "[]") } catch {}
 
   // 追加用户消息（regenerate 模式不追加）
-  if (!body.regenerate && userMessage) {
-    history.push({ role: "user", content: userMessage, timestamp: Date.now() })
+  if (!body.regenerate && (userMessage || (body.images && body.images.length > 0))) {
+    // 首次消息：把题目截图（imageCrop）也附上，作为 AI 的参考
+    const isFirstMessage = history.length === 0
+    const allImages: string[] = []
+    if (isFirstMessage && session.imageCrop) {
+      allImages.push(session.imageCrop)
+    }
+    if (body.images && body.images.length > 0) {
+      allImages.push(...body.images)
+    }
+    history.push({
+      role: "user",
+      content: userMessage || (isFirstMessage ? "请开始。" : "（上传了图片）"),
+      timestamp: Date.now(),
+      images: allImages.length > 0 ? allImages : undefined,
+    })
   }
 
   // 构建 AI 消息

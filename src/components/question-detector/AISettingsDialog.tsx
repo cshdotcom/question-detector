@@ -1,15 +1,50 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Settings2, Eye, EyeOff, ExternalLink, Zap, Loader2, CheckCircle2, XCircle } from "lucide-react"
+import { Settings2, Eye, EyeOff, ExternalLink, Zap, Loader2, CheckCircle2, XCircle, Volume2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { Slider } from "@/components/ui/slider"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { toast } from "sonner"
 import { useDetectorStore } from "@/lib/store"
 import type { AIProviderConfig } from "@/lib/types"
+
+interface TTSConfig {
+  engine: "browser" | "ai"
+  browserVoice: string
+  browserRate: number
+  aiVoice: string
+  aiSpeed: number
+  autoPlay: boolean
+}
+
+const AI_VOICES = [
+  { id: "tongtong", name: "彤彤（女·温柔）" },
+  { id: "chuichui", name: "吹吹（女·活泼）" },
+  { id: "xiaochen", name: "小辰（男·沉稳）" },
+  { id: "jam", name: "Jam（男·英伦）" },
+  { id: "kazi", name: "卡兹（中性）" },
+  { id: "douji", name: "豆吉（童声）" },
+  { id: "luodo", name: "罗多（男·低沉）" },
+]
+
+const TTS_STORAGE_KEY = "tutor-tts-config"
+
+function loadTTSConfig(): TTSConfig {
+  if (typeof window === "undefined") return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false }
+  try {
+    const raw = localStorage.getItem(TTS_STORAGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return { engine: "browser", browserVoice: "", browserRate: 1.0, aiVoice: "tongtong", aiSpeed: 1.0, autoPlay: false }
+}
+
+function saveTTSConfig(cfg: TTSConfig) {
+  try { localStorage.setItem(TTS_STORAGE_KEY, JSON.stringify(cfg)) } catch {}
+}
 
 interface Props {
   open: boolean
@@ -32,18 +67,36 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; latency?: number } | null>(null)
   const [envHasDefault, setEnvHasDefault] = useState(false)
+  const [ttsConfig, setTTSConfig] = useState<TTSConfig>(loadTTSConfig)
+  const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([])
 
   useEffect(() => {
     if (open) {
       setDraft(aiConfig)
       setTestResult(null)
+      setTTSConfig(loadTTSConfig())
       // 查询后端是否配置了默认 AI
       fetch("/api/env-config", { method: "GET" })
         .then((r) => r.json())
         .then((d) => setEnvHasDefault(!!d.hasDefaultAI))
         .catch(() => setEnvHasDefault(false))
+      // 加载浏览器 TTS 声音
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        const load = () => {
+          const vs = window.speechSynthesis.getVoices()
+          setBrowserVoices(vs)
+        }
+        load()
+        window.speechSynthesis.onvoiceschanged = load
+      }
     }
   }, [open, aiConfig])
+
+  const updateTTS = (patch: Partial<TTSConfig>) => {
+    const newCfg = { ...ttsConfig, ...patch }
+    setTTSConfig(newCfg)
+    saveTTSConfig(newCfg)
+  }
 
   const onSave = () => {
     if (draft.enabled && !draft.apiKey) {
@@ -250,6 +303,79 @@ export function AISettingsDialog({ open, onOpenChange }: Props) {
               </div>
             </>
           )}
+        </div>
+
+        {/* TTS 语音合成设置 */}
+        <div className="border-t pt-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <Volume2 className="size-4 text-muted-foreground" />
+            <h4 className="text-sm font-medium">语音合成（TTS）设置</h4>
+          </div>
+
+          {/* 默认引擎 */}
+          <div className="flex items-center justify-between gap-2">
+            <Label className="text-xs">默认引擎</Label>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => updateTTS({ engine: "browser" })}
+                className={`px-3 py-1 rounded-md text-xs ${ttsConfig.engine === "browser" ? "bg-blue-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                浏览器 TTS
+              </button>
+              <button
+                onClick={() => updateTTS({ engine: "ai" })}
+                className={`px-3 py-1 rounded-md text-xs ${ttsConfig.engine === "ai" ? "bg-violet-500 text-white" : "bg-muted text-muted-foreground"}`}
+              >
+                AI TTS
+              </button>
+            </div>
+          </div>
+
+          {/* 浏览器 TTS 设置 */}
+          <div className="space-y-2 px-3 py-2 rounded-md bg-muted/30">
+            <div className="text-xs font-medium text-muted-foreground">浏览器 TTS（免费即时）</div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs shrink-0 w-16">声音</Label>
+              <select
+                className="flex-1 h-8 px-2 rounded border bg-background text-xs"
+                value={ttsConfig.browserVoice}
+                onChange={(e) => updateTTS({ browserVoice: e.target.value })}
+              >
+                {browserVoices.length === 0 ? (
+                  <option value="">（无可用声音）</option>
+                ) : (
+                  browserVoices.map((v) => (
+                    <option key={v.voiceURI} value={v.voiceURI}>{v.name} ({v.lang})</option>
+                  ))
+                )}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs shrink-0 w-16">语速 {ttsConfig.browserRate.toFixed(1)}x</Label>
+              <Slider value={[ttsConfig.browserRate]} onValueChange={(v) => updateTTS({ browserRate: v[0] })} min={0.5} max={2.0} step={0.1} className="flex-1" />
+            </div>
+          </div>
+
+          {/* AI TTS 设置 */}
+          <div className="space-y-2 px-3 py-2 rounded-md bg-muted/30">
+            <div className="text-xs font-medium text-muted-foreground">AI TTS（z-ai-web-dev-sdk，音质更好）</div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs shrink-0 w-16">声音</Label>
+              <select
+                className="flex-1 h-8 px-2 rounded border bg-background text-xs"
+                value={ttsConfig.aiVoice}
+                onChange={(e) => updateTTS({ aiVoice: e.target.value })}
+              >
+                {AI_VOICES.map((v) => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs shrink-0 w-16">语速 {ttsConfig.aiSpeed.toFixed(1)}x</Label>
+              <Slider value={[ttsConfig.aiSpeed]} onValueChange={(v) => updateTTS({ aiSpeed: v[0] })} min={0.5} max={2.0} step={0.1} className="flex-1" />
+            </div>
+          </div>
         </div>
 
         <DialogFooter>

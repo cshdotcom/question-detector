@@ -12,6 +12,7 @@ interface SessionListItem {
   questionIdx: number
   stage: number
   status: string
+  archived: boolean
   createdAt: number
   updatedAt: number
   thumbnail: string
@@ -31,6 +32,7 @@ export async function GET() {
   try {
     const rows = await db.tutorSession.findMany({
       orderBy: { updatedAt: "desc" },
+      where: { archived: false },
       select: {
         id: true,
         type: true,
@@ -39,6 +41,7 @@ export async function GET() {
         questionIdx: true,
         stage: true,
         status: true,
+        archived: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -57,6 +60,7 @@ export async function GET() {
       questionIdx: r.questionIdx,
       stage: r.stage,
       status: r.status,
+      archived: r.archived,
       createdAt: r.createdAt.getTime(),
       updatedAt: r.updatedAt.getTime(),
       thumbnail: thumbMap.get(r.imageId) ?? "",

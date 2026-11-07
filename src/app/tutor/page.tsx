@@ -12,6 +12,7 @@ import {
   Loader2,
   Plus,
   ScanText,
+  Pen,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authFetch } from "@/lib/auth-fetch"
@@ -141,6 +142,25 @@ export default function TutorHubPage() {
                 <div className="font-semibold text-base mb-1">讲题模式</div>
                 <div className="text-xs text-muted-foreground leading-relaxed">
                   AI 用 HTML 动态板书 + SVG 知识卡片讲解题目，支持追问
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* 独立白板入口 */}
+          <button
+            onClick={() => router.push("/tutor/whiteboards")}
+            className="text-left p-5 rounded-2xl border bg-cyan-50/50 dark:bg-cyan-950/20 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center shrink-0">
+                <Pen className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">独立画板</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  专业画笔工具集：画笔/形状/文字/高亮/橡皮/图层/网格/几何图形/公式贴纸
                 </div>
               </div>
               <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />

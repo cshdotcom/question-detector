@@ -9,6 +9,13 @@ import {
   Loader2,
   Brain,
   Lightbulb,
+  ImagePlus,
+  X,
+  MoreVertical,
+  Trash2,
+  Pencil,
+  Archive,
+  ChevronDown,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -17,6 +24,13 @@ import { authFetch } from "@/lib/auth-fetch"
 import { sendTutorChat, type TutorMessageMeta } from "@/lib/tutor-chat-client"
 import { TTSPlayer } from "./TTSPlayer"
 import type { Question, AIProviderConfig } from "@/lib/types"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 export interface ChatMessage {
   role: "user" | "assistant"
@@ -24,6 +38,7 @@ export interface ChatMessage {
   timestamp: number
   stage?: number
   meta?: TutorMessageMeta
+  images?: string[] // 用户上传的图片 dataUrl
 }
 
 export interface KnowledgeCard {
@@ -68,6 +83,10 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   const [streamContent, setStreamContent] = useState("")
   const [loading, setLoading] = useState(true)
   const [aiConfig, setAIConfig] = useState<AIProviderConfig | undefined>(undefined)
+  const [pendingImages, setPendingImages] = useState<string[]>([])
+  const [renaming, setRenaming] = useState(false)
+  const [titleDraft, setTitleDraft] = useState("")
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -79,6 +98,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
       const data = await resp.json().catch(() => ({}))
       if (resp.ok && data.ok) {
         setSession(data.session)
+        setTitleDraft(data.session.title)
       } else {
         toast.error(`加载失败：${data?.error || `HTTP ${resp.status}`}`)
       }
@@ -99,31 +119,175 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
     } catch {}
   }, [])
 
+  // 粘贴图片支持
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      const imgs: string[] = []
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith("image/")) {
+          const file = items[i].getAsFile()
+          if (!file) continue
+          const reader = new FileReader()
+          reader.onload = () => {
+            const dataUrl = reader.result as string
+            // 缩到 ≤800px
+            resizeImage(dataUrl, 800).then((resized) => {
+              setPendingImages((prev) => [...prev, resized])
+            })
+          }
+          reader.readAsDataURL(file)
+        }
+      }
+    }
+    window.addEventListener("paste", onPaste)
+    return () => window.removeEventListener("paste", onPaste)
+  }, [])
+
   // 自动滚动到底部
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [session?.messages, streamContent])
+  }, [session?.messages, streamContent, pendingImages])
+
+  // 图片文件选择
+  const onFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+    Array.from(files).forEach((file) => {
+      if (!file.type.startsWith("image/")) return
+      const reader = new FileReader()
+      reader.onload = async () => {
+        const dataUrl = reader.result as string
+        const resized = await resizeImage(dataUrl, 800)
+        setPendingImages((prev) => [...prev, resized])
+      }
+      reader.readAsDataURL(file)
+    })
+    e.target.value = "" // reset
+  }, [])
+
+  // 删除待发送图片
+  const removePendingImage = useCallback((idx: number) => {
+    setPendingImages((prev) => prev.filter((_, i) => i !== idx))
+  }, [])
+
+  // 删除单条消息
+  const deleteMessage = useCallback(async (msgIdx: number) => {
+    if (!session) return
+    if (!confirm("确定删除这条消息？")) return
+    const newMessages = session.messages.filter((_, i) => i !== msgIdx)
+    try {
+      await authFetch(`/api/tutor/sessions/${sessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages }),
+      })
+      setSession((prev) => prev ? { ...prev, messages: newMessages } : prev)
+      toast.success("已删除")
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId])
+
+  // 删除单张知识卡片
+  const deleteKnowledgeCard = useCallback(async (cardIdx: number) => {
+    if (!session) return
+    if (!confirm("确定删除这张知识卡片？")) return
+    const newCards = session.knowledgeCards.filter((_, i) => i !== cardIdx)
+    try {
+      await authFetch(`/api/tutor/sessions/${sessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ knowledgeCards: newCards }),
+      })
+      setSession((prev) => prev ? { ...prev, knowledgeCards: newCards } : prev)
+      toast.success("已删除")
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId])
+
+  // 删除单张画板
+  const deleteVisualBoard = useCallback(async (boardIdx: number) => {
+    if (!session) return
+    if (!confirm("确定删除这张画板？")) return
+    const newBoards = session.visualBoards.filter((_, i) => i !== boardIdx)
+    try {
+      await authFetch(`/api/tutor/sessions/${sessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ visualBoards: newBoards }),
+      })
+      setSession((prev) => prev ? { ...prev, visualBoards: newBoards } : prev)
+      toast.success("已删除")
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId])
+
+  // 重命名会话
+  const saveRename = useCallback(async () => {
+    if (!session) return
+    const newTitle = titleDraft.trim()
+    if (!newTitle || newTitle === session.title) {
+      setRenaming(false)
+      return
+    }
+    try {
+      await authFetch(`/api/tutor/sessions/${sessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      })
+      setSession((prev) => prev ? { ...prev, title: newTitle } : prev)
+      setRenaming(false)
+      toast.success("已重命名")
+    } catch (e) {
+      toast.error(`重命名失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId, titleDraft])
+
+  // 归档会话
+  const archiveSession = useCallback(async () => {
+    if (!session) return
+    if (!confirm("归档后会话将从列表隐藏，确定？")) return
+    try {
+      await authFetch(`/api/tutor/sessions/${sessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      })
+      toast.success("已归档")
+      onBack()
+    } catch (e) {
+      toast.error(`归档失败：${(e as Error).message}`)
+    }
+  }, [session, sessionId, onBack])
 
   const send = async (msg?: string, regenerate = false) => {
     const message = (msg ?? input).trim()
-    if (!message && !regenerate) return
+    const images = pendingImages
+    if (!message && !images.length && !regenerate) return
     if (streaming) return
     setInput("")
+    setPendingImages([])
     setStreaming(true)
     setStreamContent("")
     const ctrl = new AbortController()
     abortRef.current = ctrl
 
     // 乐观更新：在 UI 中追加用户消息（regenerate 模式不追加）
-    if (!regenerate && message) {
+    if (!regenerate && (message || images.length > 0)) {
       setSession((prev) => prev ? {
         ...prev,
         messages: [...prev.messages, {
           role: "user",
-          content: message,
+          content: message || "（上传了图片）",
           timestamp: Date.now(),
+          images: images.length > 0 ? images : undefined,
         }],
       } : prev)
     }
@@ -133,6 +297,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
       message,
       config: aiConfig,
       regenerate,
+      images: images.length > 0 ? images : undefined,
       signal: ctrl.signal,
     }, {
       onToken: (token) => setStreamContent((c) => c + token),
@@ -202,7 +367,22 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           <Icon className="size-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold truncate">{session.title}</div>
+          {renaming ? (
+            <input
+              type="text"
+              value={titleDraft}
+              autoFocus
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={saveRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); saveRename() }
+                if (e.key === "Escape") { setRenaming(false); setTitleDraft(session.title) }
+              }}
+              className="text-sm font-semibold w-full outline-none border-b border-primary bg-transparent"
+            />
+          ) : (
+            <div className="text-sm font-semibold truncate">{session.title}</div>
+          )}
           <div className="text-xs text-muted-foreground">
             {isSolve ? "解题模式" : "讲题模式"}
             {isSolve && session.stage > 0 && ` · 阶段 ${session.stage}/6`}
@@ -213,6 +393,22 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
             第 {session.questionSnapshot.number} 题
           </div>
         )}
+        {/* 更多操作菜单 */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="size-8 p-0 shrink-0">
+              <MoreVertical className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onClick={() => { setRenaming(true); setTitleDraft(session.title) }}>
+              <Pencil className="size-4 mr-2" /> 重命名
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={archiveSession}>
+              <Archive className="size-4 mr-2" /> 归档
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
 
       {/* 题目图（如果有） */}
@@ -244,7 +440,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           </div>
         )}
         {session.messages.map((m, i) => (
-          <MessageBubble key={i} message={m} isSolve={isSolve} />
+          <MessageBubble key={i} message={m} isSolve={isSolve} onDelete={() => deleteMessage(i)} />
         ))}
         {/* 流式响应 */}
         {streaming && streamContent && (
@@ -279,10 +475,10 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
           </div>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {session.knowledgeCards.map((c, i) => (
-              <KnowledgeCardItem key={`k${i}`} card={c} />
+              <KnowledgeCardItem key={`k${i}`} card={c} onDelete={() => deleteKnowledgeCard(i)} />
             ))}
             {session.visualBoards.map((b, i) => (
-              <VisualBoardItem key={`v${i}`} board={b} />
+              <VisualBoardItem key={`v${i}`} board={b} onDelete={() => deleteVisualBoard(i)} />
             ))}
           </div>
         </div>
@@ -290,12 +486,48 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
 
       {/* 输入区 */}
       <div className="border-t shrink-0 p-3 bg-background">
+        {/* 待发送图片预览 */}
+        {pendingImages.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {pendingImages.map((img, i) => (
+              <div key={i} className="relative size-16 rounded-md overflow-hidden border">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={img} alt={`待发送 ${i + 1}`} className="w-full h-full object-cover" />
+                <button
+                  onClick={() => removePendingImage(i)}
+                  className="absolute top-0 right-0 size-5 bg-destructive text-destructive-foreground rounded-bl-md flex items-center justify-center"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex gap-2 items-end">
+          {/* 图片上传按钮 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={onFileSelect}
+          />
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-11 w-11 p-0 shrink-0"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={streaming}
+            title="上传图片（也支持 Ctrl+V 粘贴）"
+          >
+            <ImagePlus className="size-4" />
+          </Button>
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={isSolve ? "在这里写你的解题过程或回复 AI 老师…" : "在这里提问…"}
-            className="min-h-[44px] max-h-32 resize-none text-sm"
+            placeholder={isSolve ? "在这里写你的解题过程或回复 AI 老师…（可粘贴图片）" : "在这里提问…（可粘贴图片）"}
+            className="min-h-[44px] max-h-32 resize-none text-sm flex-1"
             rows={1}
             disabled={streaming}
             onKeyDown={(e) => {
@@ -337,7 +569,7 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
                     size="sm"
                     className={`h-11 shrink-0 bg-${accentColor}-500 hover:bg-${accentColor}-600`}
                     onClick={() => send()}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() && pendingImages.length === 0}
                   >
                     <Send className="size-4" />
                   </Button>
@@ -383,7 +615,7 @@ function StageIndicator({ stage }: { stage: number }) {
   )
 }
 
-function MessageBubble({ message, isSolve }: { message: ChatMessage; isSolve: boolean }) {
+function MessageBubble({ message, isSolve, onDelete }: { message: ChatMessage; isSolve: boolean; onDelete?: () => void }) {
   const isUser = message.role === "user"
   const accentColor = isSolve ? "violet" : "amber"
   const Icon = isUser ? null : (isSolve ? Brain : Lightbulb)
@@ -401,17 +633,40 @@ function MessageBubble({ message, isSolve }: { message: ChatMessage; isSolve: bo
     return txt
   })()
   return (
-    <div className={`flex gap-2 ${isUser ? "flex-row-reverse" : ""}`}>
+    <div className={`group flex gap-2 ${isUser ? "flex-row-reverse" : ""}`}>
       {!isUser && (
         <div className={`size-7 rounded-md bg-${accentColor}-500 text-white flex items-center justify-center shrink-0 mt-0.5`}>
           {Icon && <Icon className="size-4" />}
         </div>
       )}
       <div className={`flex-1 min-w-0 ${isUser ? "max-w-[80%]" : ""}`}>
-        <div className="text-xs text-muted-foreground mb-1">
-          {isUser ? "你" : "AI 老师"}
-          {!isUser && message.stage && ` · 阶段 ${message.stage}`}
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xs text-muted-foreground">
+            {isUser ? "你" : "AI 老师"}
+            {!isUser && message.stage && ` · 阶段 ${message.stage}`}
+          </span>
+          {/* 删除消息按钮（hover 显示） */}
+          {onDelete && (
+            <button
+              onClick={onDelete}
+              className="opacity-0 group-hover:opacity-100 transition-opacity size-5 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center"
+              title="删除这条消息"
+            >
+              <Trash2 className="size-3" />
+            </button>
+          )}
         </div>
+        {/* 用户上传的图片 */}
+        {isUser && message.images && message.images.length > 0 && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            {message.images.map((img, i) => (
+              <div key={i} className="size-24 rounded-md overflow-hidden border">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={img} alt={`附件 ${i + 1}`} className="w-full h-full object-cover" />
+              </div>
+            ))}
+          </div>
+        )}
         <div className={`text-sm whitespace-pre-wrap break-words ${isUser ? "bg-muted rounded-lg p-2.5" : ""}`}>
           {renderInlineContent(displayContent)}
         </div>
@@ -481,16 +736,27 @@ function stripInline(text: string): string {
   return text.replace(/<[^>]+>/g, "").trim()
 }
 
-function KnowledgeCardItem({ card }: { card: KnowledgeCard }) {
+function KnowledgeCardItem({ card, onDelete }: { card: KnowledgeCard; onDelete?: () => void }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="shrink-0 w-64 rounded-lg border bg-card overflow-hidden">
-      <button onClick={() => setOpen((o) => !o)} className="w-full text-left p-2">
-        <div className="text-xs font-medium truncate">{card.title}</div>
-        {card.summary && (
-          <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{card.summary}</div>
+    <div className="group shrink-0 w-64 rounded-lg border bg-card overflow-hidden">
+      <div className="flex items-center">
+        <button onClick={() => setOpen((o) => !o)} className="flex-1 text-left p-2 min-w-0">
+          <div className="text-xs font-medium truncate">{card.title}</div>
+          {card.summary && (
+            <div className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{card.summary}</div>
+          )}
+        </button>
+        {onDelete && (
+          <button
+            onClick={onDelete}
+            className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
+            title="删除卡片"
+          >
+            <Trash2 className="size-3" />
+          </button>
         )}
-      </button>
+      </div>
       {open && card.svg && (
         <div className="border-t p-1 bg-muted/30 overflow-x-auto">
           <div dangerouslySetInnerHTML={{ __html: card.svg }} />
@@ -500,17 +766,32 @@ function KnowledgeCardItem({ card }: { card: KnowledgeCard }) {
   )
 }
 
-function VisualBoardItem({ board, expanded = false }: { board: VisualBoard; expanded?: boolean }) {
+function VisualBoardItem({ board, expanded = false, onDelete }: { board: VisualBoard; expanded?: boolean; onDelete?: () => void }) {
   const [open, setOpen] = useState(expanded)
+  // 包装 HTML：加 charset meta 防止中文乱码 + 基础样式
+  const fullHtml = board.html
+    ? `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}body{margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif;background:transparent}</style></head><body>${board.html}</body></html>`
+    : ""
   return (
-    <div className="shrink-0 w-80 rounded-lg border bg-card overflow-hidden">
-      <button onClick={() => setOpen((o) => !o)} className="w-full text-left p-2">
-        <div className="text-xs font-medium truncate">{board.caption || "动态画板"}</div>
-      </button>
-      {open && board.html && (
+    <div className="group shrink-0 w-80 rounded-lg border bg-card overflow-hidden">
+      <div className="flex items-center">
+        <button onClick={() => setOpen((o) => !o)} className="flex-1 text-left p-2 min-w-0">
+          <div className="text-xs font-medium truncate">{board.caption || "动态画板"}</div>
+        </button>
+        {onDelete && (
+          <button
+            onClick={onDelete}
+            className="opacity-0 group-hover:opacity-100 transition-opacity mr-1 size-6 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center shrink-0"
+            title="删除画板"
+          >
+            <Trash2 className="size-3" />
+          </button>
+        )}
+      </div>
+      {open && fullHtml && (
         <div className="border-t bg-white">
           <iframe
-            srcDoc={board.html}
+            srcDoc={fullHtml}
             className="w-full border-0"
             style={{ height: board.height || 300, maxWidth: board.width || "100%" }}
             sandbox="allow-scripts"
@@ -520,4 +801,24 @@ function VisualBoardItem({ board, expanded = false }: { board: VisualBoard; expa
       )}
     </div>
   )
+}
+
+/** 缩放图片到指定最大边长，返回 dataUrl */
+async function resizeImage(dataUrl: string, maxSide: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const w = img.naturalWidth, h = img.naturalHeight
+      const scale = Math.max(w, h) > maxSide ? maxSide / Math.max(w, h) : 1
+      const sw = Math.round(w * scale), sh = Math.round(h * scale)
+      const canvas = document.createElement("canvas")
+      canvas.width = sw; canvas.height = sh
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return reject(new Error("画布初始化失败"))
+      ctx.drawImage(img, 0, 0, sw, sh)
+      resolve(canvas.toDataURL("image/jpeg", 0.9))
+    }
+    img.onerror = () => reject(new Error("图片加载失败"))
+    img.src = dataUrl
+  })
 }

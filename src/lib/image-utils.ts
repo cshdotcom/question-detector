@@ -497,7 +497,7 @@ export async function removeColoredMarksFromImage(
  */
 export async function removeHandwritingFromImage(
   img: ImageItem
-): Promise<{ dataUrl: string; width: number; height: number }> {
+): Promise<{ dataUrl: string; width: number; height: number; boxes: { x: number; y: number; width: number; height: number }[]; originalDataUrl: string }> {
   const adj = img.adjustments
   const hasAdjustments =
     adj.rotation !== 0 || adj.brightness !== 1 || adj.contrast !== 1 || adj.saturate !== 1
@@ -539,7 +539,7 @@ export async function removeHandwritingFromImage(
   const boxes: { x: number; y: number; width: number; height: number }[] = data.boxes ?? []
   if (boxes.length === 0) {
     // VLM 没检测到手写，原样返回（不破坏图片）
-    return { dataUrl: sendCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch }
+    return { dataUrl: sendCanvas.toDataURL("image/jpeg", 0.94), width: cw, height: ch, boxes: [], originalDataUrl: sendDataUrl }
   }
 
   // 本地按 bbox 做局部擦除（改进版 onion-peel + 多次迭代平滑）
@@ -556,7 +556,7 @@ export async function removeHandwritingFromImage(
   eraseRegions(imageData, boxes)
   octx.putImageData(imageData, 0, 0)
 
-  return { dataUrl: outCanvas.toDataURL("image/png"), width: cw, height: ch }
+  return { dataUrl: outCanvas.toDataURL("image/png"), width: cw, height: ch, boxes, originalDataUrl: sendDataUrl }
 }
 
 /** 按 bbox 列表在 ImageData 上做局部擦除（v3 改进版）：

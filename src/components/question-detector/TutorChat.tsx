@@ -22,6 +22,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
 import { authFetch } from "@/lib/auth-fetch"
 import { sendTutorChat, type TutorMessageMeta } from "@/lib/tutor-chat-client"
@@ -729,11 +730,20 @@ export function TutorChat({ sessionId, onBack }: TutorChatProps) {
   )
 }
 
-// AI 主动发起的可视化提问面板：学生可用画板/图片回答
-function VisualQuestionPanel({ question }: { question: { prompt: string; type: "draw" | "image" | "either"; hint?: string } }) {
+// AI 主动发起的可视化提问面板：支持选择题/文字输入/画板/图片作答
+function VisualQuestionPanel({ question }: { question: {
+  prompt: string
+  type: "draw" | "image" | "either" | "choice" | "input"
+  hint?: string
+  options?: string[]
+  allowCustom?: boolean
+} }) {
   const [showWhiteboard, setShowWhiteboard] = useState(false)
   const [uploadedImage, setUploadedImage] = useState<string>("")
   const [submitted, setSubmitted] = useState(false)
+  const [textInput, setTextInput] = useState("")
+  const [selectedOption, setSelectedOption] = useState<string | null>(null)
+  const [showCustomInput, setShowCustomInput] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const onFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -742,7 +752,6 @@ function VisualQuestionPanel({ question }: { question: { prompt: string; type: "
     const reader = new FileReader()
     reader.onload = async () => {
       const dataUrl = reader.result as string
-      // 缩到 ≤800
       const img = new Image()
       img.onload = () => {
         const MAX = 800
@@ -761,6 +770,11 @@ function VisualQuestionPanel({ question }: { question: { prompt: string; type: "
     e.target.value = ""
   }
 
+  const submit = (answer: string) => {
+    setSubmitted(true)
+    // TODO: 把 answer 作为用户消息发送给 AI
+  }
+
   if (submitted) {
     return (
       <div className="mt-2 p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
@@ -777,29 +791,110 @@ function VisualQuestionPanel({ question }: { question: { prompt: string; type: "
       <div className="flex items-start gap-2 mb-2">
         <Lightbulb className="size-4 text-amber-500 shrink-0 mt-0.5" />
         <div className="flex-1 min-w-0">
-          <div className="text-xs font-medium text-amber-800 dark:text-amber-200">AI 老师的可视化提问</div>
+          <div className="text-xs font-medium text-amber-800 dark:text-amber-200">AI 老师的提问</div>
           <div className="text-sm mt-0.5">{question.prompt}</div>
           {question.hint && (
             <div className="text-xs text-muted-foreground mt-1">💡 {question.hint}</div>
           )}
         </div>
       </div>
-      {/* 作答方式 */}
-      <div className="flex gap-2 flex-wrap">
-        {(question.type === "draw" || question.type === "either") && (
-          <Button size="sm" variant="outline" className="h-8" onClick={() => setShowWhiteboard(true)}>
-            <Pen className="size-3.5 mr-1" /> 用画板作答
-          </Button>
-        )}
-        {(question.type === "image" || question.type === "either") && (
-          <>
-            <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onFileSelect} />
-            <Button size="sm" variant="outline" className="h-8" onClick={() => fileRef.current?.click()}>
-              <ImagePlus className="size-3.5 mr-1" /> 拍照/上传图片
+
+      {/* 选择题模式 */}
+      {question.type === "choice" && question.options && question.options.length > 0 && (
+        <div className="space-y-1.5 mb-2">
+          {question.options.map((opt, i) => (
+            <button
+              key={i}
+              onClick={() => { setSelectedOption(opt); setShowCustomInput(false) }}
+              className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${selectedOption === opt && !showCustomInput ? "border-amber-500 bg-amber-100 dark:bg-amber-900/40" : "border-border hover:bg-accent"}`}
+            >
+              <span className="font-medium mr-2">{String.fromCharCode(65 + i)}.</span>{opt}
+            </button>
+          ))}
+          {question.allowCustom && (
+            <button
+              onClick={() => { setShowCustomInput(true); setSelectedOption(null) }}
+              className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${showCustomInput ? "border-amber-500 bg-amber-100 dark:bg-amber-900/40" : "border-border hover:bg-accent"}`}
+            >
+              <span className="font-medium mr-2">D.</span>其他（自定义输入）
+            </button>
+          )}
+          {showCustomInput && (
+            <div className="flex gap-2 mt-1">
+              <Input
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="输入你的答案..."
+                className="h-8 text-sm flex-1"
+                onKeyDown={(e) => e.key === "Enter" && textInput.trim() && submit(textInput.trim())}
+              />
+              <Button size="sm" className="h-8" disabled={!textInput.trim()} onClick={() => submit(textInput.trim())}>
+                提交
+              </Button>
+            </div>
+          )}
+          {selectedOption && !showCustomInput && (
+            <Button size="sm" className="h-8 mt-1" onClick={() => submit(selectedOption)}>
+              确认选择：{selectedOption}
             </Button>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+      )}
+
+      {/* 文字输入模式 */}
+      {question.type === "input" && (
+        <div className="flex gap-2 mb-2">
+          <Input
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder="输入你的答案..."
+            className="h-8 text-sm flex-1"
+            onKeyDown={(e) => e.key === "Enter" && textInput.trim() && submit(textInput.trim())}
+          />
+          <Button size="sm" className="h-8" disabled={!textInput.trim()} onClick={() => submit(textInput.trim())}>
+            提交
+          </Button>
+        </div>
+      )}
+
+      {/* 画板/图片作答模式 */}
+      {(question.type === "draw" || question.type === "image" || question.type === "either") && (
+        <div className="flex gap-2 flex-wrap mb-2">
+          {(question.type === "draw" || question.type === "either") && (
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setShowWhiteboard(true)}>
+              <Pen className="size-3.5 mr-1" /> 用画板作答
+            </Button>
+          )}
+          {(question.type === "image" || question.type === "either") && (
+            <>
+              <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onFileSelect} />
+              <Button size="sm" variant="outline" className="h-8" onClick={() => fileRef.current?.click()}>
+                <ImagePlus className="size-3.5 mr-1" /> 拍照/上传图片
+              </Button>
+            </>
+          )}
+          {question.allowCustom && (
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setShowCustomInput(true)}>
+              文字回答
+            </Button>
+          )}
+          {showCustomInput && (
+            <div className="flex gap-2 w-full mt-1">
+              <Input
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="输入你的答案..."
+                className="h-8 text-sm flex-1"
+                onKeyDown={(e) => e.key === "Enter" && textInput.trim() && submit(textInput.trim())}
+              />
+              <Button size="sm" className="h-8" disabled={!textInput.trim()} onClick={() => submit(textInput.trim())}>
+                提交
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 已上传图片预览 */}
       {uploadedImage && (
         <div className="mt-2">
@@ -814,12 +909,13 @@ function VisualQuestionPanel({ question }: { question: { prompt: string; type: "
             </button>
           </div>
           <div className="mt-1">
-            <Button size="sm" className="h-7" onClick={() => setSubmitted(true)}>
+            <Button size="sm" className="h-7" onClick={() => submit("[上传了图片作答]")}>
               提交作答
             </Button>
           </div>
         </div>
       )}
+
       {/* 画板弹窗 */}
       {showWhiteboard && (
         <div className="fixed inset-0 z-50 bg-background flex flex-col">
@@ -831,7 +927,7 @@ function VisualQuestionPanel({ question }: { question: { prompt: string; type: "
             <Button
               size="sm"
               className="ml-auto"
-              onClick={() => { setSubmitted(true); setShowWhiteboard(false) }}
+              onClick={() => { submit("[画板作答已提交]"); setShowWhiteboard(false) }}
             >
               提交作答
             </Button>

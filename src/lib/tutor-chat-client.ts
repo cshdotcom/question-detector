@@ -16,7 +16,13 @@ export interface TutorMessageMeta {
   visualBoard?: { html?: string; width?: number; height?: number; caption?: string }
   visualization?: { type?: string; svg?: string; caption?: string }
   suggestedTools?: { tool: string; reason: string }[]
-  visualQuestion?: { prompt: string; type: "draw" | "image" | "either"; hint?: string }
+  visualQuestion?: {
+    prompt: string
+    type: "draw" | "image" | "either" | "choice" | "input"
+    hint?: string
+    options?: string[]
+    allowCustom?: boolean
+  }
 }
 
 export interface ChatCallbacks {

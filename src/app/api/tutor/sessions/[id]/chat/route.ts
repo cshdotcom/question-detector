@@ -210,7 +210,13 @@ export async function POST(req: Request, ctx: RouteCtx) {
             meta.suggestedTools = parsed.suggestedTools
           }
           if (parsed.visualQuestion && typeof parsed.visualQuestion === "object") {
-            meta.visualQuestion = parsed.visualQuestion as { prompt: string; type: "draw" | "image" | "either"; hint?: string }
+            meta.visualQuestion = parsed.visualQuestion as {
+              prompt: string
+              type: "draw" | "image" | "either" | "choice" | "input"
+              hint?: string
+              options?: string[]
+              allowCustom?: boolean
+            }
           }
         }
         // 追加 assistant 消息

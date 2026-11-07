@@ -139,3 +139,30 @@ model Favorite {
   @@index([createdAt])
   @@index([refId])
 }
+
+// AI 背书：用户上传/输入需要背诵的内容，AI 辅助背诵
+// 模式：挖空测试 / AI 监督背诵 / 自测 / AI 帮助记忆
+model RecitationSession {
+  id          String   @id
+  title       String   @default("未命名背诵")
+  // 原文内容（学生需要背诵的全文）
+  content     String   @default("")
+  // 可选附图（如课本拍照）
+  imageData    String  @default("")
+  // 模式: "fillblank" (挖空测试) | "supervised" (AI监督) | "selftest" (自测) | "aihelp" (AI帮助记忆)
+  mode        String   @default("fillblank")
+  // 挖空测试：AI 生成的挖空版本（JSON: [{blankId, answer, context}]）
+  fillBlanks  String   @default("[]")
+  // AI 帮助记忆：AI 生成的记忆口诀/联想/思维导图
+  memoryAids  String   @default("")
+  // 用户作答记录（JSON: [{blankId, userAnswer, correct}]）
+  answers     String   @default("[]")
+  // 背诵进度 0-100
+  progress    Int      @default(0)
+  status      String   @default("active") // active | completed | archived
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+
+  @@index([mode])
+  @@index([createdAt])
+}

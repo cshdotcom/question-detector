@@ -182,15 +182,29 @@ ${imagePath ? "题目图片已附在本消息中。" : ""}
       "reason": "为什么推荐这个工具（如：'画一个直角三角形来理解勾股定理'）"
     }
   ],
-  "visualQuestion": {                   // 可选：主动发起可视化提问（让学生用画板/图片回答）
-    "prompt": "请在画板上画出...，或上传你的解题图片",
-    "type": "draw|image|either",        // draw=画板作答, image=图片作答, either=任选
-    "hint": "提示信息（如：'画一个直角三角形，标出两边'）"
+  "visualQuestion": {                   // 可选：主动发起可视化提问（重要！要主动发起）
+    "prompt": "问题文字（如：'你认为下一步应该怎么做？'）",
+    "type": "draw|image|either|choice|input",  // draw=画板作答, image=图片, either=任选, choice=选择题, input=文字输入
+    "hint": "提示信息",
+    "options": ["选项A", "选项B", "选项C"],  // 仅 type=choice 时用，2-4 个选项
+    "allowCustom": true                  // choice 模式下是否允许自定义输入
   },
   "followUpQuestion": "...",            // 可选：抛给学生的思考问题
   "waitUserReply": true                 // 是否等待学生提问/回复
 }
 \`\`\`
+
+# 主动发起可视化提问（最高优先级！必须做到）
+- 每次讲解后必须发起一个提问，让学生回答
+- 提问类型多样化：
+  - choice：给出 2-4 个选项让学生选（如"以下哪个是正确的？"）
+  - input：让学生文字输入答案
+  - draw：让学生在画板上画图
+  - image：让学生上传图片
+  - either：画板或图片任选
+- choice 类型要给出有意义的选项（不是显然的答案）
+- 每隔 1-2 轮对话就要发起一次提问
+- 学生回答后给予反馈，再继续讲解
 
 # 主动推荐白板工具（重要！）
 - 讲解几何题时，主动建议学生用 "polygon" 画三角形、"circle" 画圆、"coordinate" 建坐标系

@@ -17,6 +17,7 @@ import {
   FileText,
   LayoutGrid,
   Bookmark,
+  Sparkles,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authFetch } from "@/lib/auth-fetch"
@@ -246,10 +247,46 @@ export default function TutorHubPage() {
               <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
             </div>
           </button>
+
+          {/* AI 背书 */}
+          <button
+            onClick={() => router.push("/tutor/recitations")}
+            className="text-left p-5 rounded-2xl border bg-indigo-50/50 dark:bg-indigo-950/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-indigo-500 text-white flex items-center justify-center shrink-0">
+                <BookOpen className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">AI 背书</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  挖空测试 · AI 监督背诵 · 自测模式 · AI 帮助记忆（口诀+思维导图）
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
+
+          {/* 自定义问答 */}
+          <button
+            onClick={() => router.push("/tutor/custom-qa")}
+            className="text-left p-5 rounded-2xl border bg-cyan-50/50 dark:bg-cyan-950/20 hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors"
+          >
+            <div className="flex items-start gap-3">
+              <div className="size-10 rounded-xl bg-cyan-500 text-white flex items-center justify-center shrink-0">
+                <Sparkles className="size-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-base mb-1">自定义问答</div>
+                <div className="text-xs text-muted-foreground leading-relaxed">
+                  上传任意图片 + 自定义问题，AI 解答/讲解/分析
+                </div>
+              </div>
+              <ArrowRight className="size-4 text-muted-foreground shrink-0 mt-2" />
+            </div>
+          </button>
         </div>
       </section>
-
-      {/* History */}
       <section className="max-w-6xl mx-auto px-4 pb-12">
         <div className="flex items-center gap-2 mb-3">
           <History className="size-4 text-muted-foreground" />

@@ -2,6 +2,7 @@
 
 import type { BBox, ImageAdjustments, ImageItem, Question, SubImage } from "./types"
 import { uid } from "./utils"
+import { authFetch } from "./auth-fetch"
 
 /** 加载图片 */
 export function loadImage(src: string): Promise<HTMLImageElement> {
@@ -488,7 +489,7 @@ export async function removeHandwritingFromImage(
   const { useDetectorStore } = await import("./store")
   const aiConfig = useDetectorStore.getState().aiConfig
 
-  const resp = await fetch("/api/remove-handwriting", {
+  const resp = await authFetch("/api/remove-handwriting", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image: sendDataUrl, width: cw, height: ch, config: aiConfig }),

@@ -11,6 +11,7 @@
 
 import type { ImageItem, ImageAdjustments, Question } from "./types"
 import { DEFAULT_ADJUSTMENTS } from "./types"
+import { authFetch } from "./auth-fetch"
 
 /** 生成缩略图 dataUrl（长边 ≤ 320，JPEG 0.7），用于画廊快速加载 */
 export async function makeThumbnail(dataUrl: string): Promise<string> {
@@ -66,7 +67,7 @@ interface ListImageDTO {
 /** 加载所有图片元数据（不含原图） */
 export async function loadAllImages(): Promise<ImageItem[]> {
   try {
-    const resp = await fetch("/api/images", { cache: "no-store" })
+    const resp = await authFetch("/api/images", { cache: "no-store" })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok || !data?.ok) {
       console.warn("[cloud-db] loadAllImages failed:", data?.error)
@@ -89,7 +90,7 @@ export async function loadAllImages(): Promise<ImageItem[]> {
 /** 懒加载单张原图（含 dataUrl） */
 export async function loadImageData(id: string): Promise<ImageItem | null> {
   try {
-    const resp = await fetch(`/api/images/${encodeURIComponent(id)}`, { cache: "no-store" })
+    const resp = await authFetch(`/api/images/${encodeURIComponent(id)}`, { cache: "no-store" })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok || !data?.ok) {
       console.warn("[cloud-db] loadImageData failed:", data?.error)
@@ -113,7 +114,7 @@ export async function loadImageData(id: string): Promise<ImageItem | null> {
 /** 新建图片记录（全量字段） */
 export async function saveImage(img: ImageItem): Promise<boolean> {
   try {
-    const resp = await fetch("/api/images", {
+    const resp = await authFetch("/api/images", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -158,7 +159,7 @@ export async function patchImage(
   }>
 ): Promise<boolean> {
   try {
-    const resp = await fetch(`/api/images/${encodeURIComponent(id)}`, {
+    const resp = await authFetch(`/api/images/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -178,7 +179,7 @@ export async function patchImage(
 /** 删除单张 */
 export async function deleteImage(id: string): Promise<void> {
   try {
-    await fetch(`/api/images/${encodeURIComponent(id)}`, { method: "DELETE" })
+    await authFetch(`/api/images/${encodeURIComponent(id)}`, { method: "DELETE" })
   } catch (e) {
     console.warn("[cloud-db] deleteImage error:", e)
   }
@@ -188,7 +189,7 @@ export async function deleteImage(id: string): Promise<void> {
 export async function deleteImages(ids: string[]): Promise<void> {
   if (ids.length === 0) return
   try {
-    await fetch("/api/images/bulk-delete", {
+    await authFetch("/api/images/bulk-delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -201,7 +202,7 @@ export async function deleteImages(ids: string[]): Promise<void> {
 /** 清空全部 */
 export async function clearAllImages(): Promise<void> {
   try {
-    await fetch("/api/images", { method: "DELETE" })
+    await authFetch("/api/images", { method: "DELETE" })
   } catch (e) {
     console.warn("[cloud-db] clearAllImages error:", e)
   }

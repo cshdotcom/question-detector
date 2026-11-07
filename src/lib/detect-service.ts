@@ -5,6 +5,7 @@ import { sanitizeBBox } from "./store"
 import { uid } from "./utils"
 import { fillAllQuestionImages } from "./image-utils"
 import { detectQuestionsOffline } from "./offline-detect"
+import { authFetch } from "./auth-fetch"
 
 export type DetectMethod = "ai" | "offline"
 
@@ -23,7 +24,7 @@ export async function detectWithAI(
   img: ImageItem,
   config?: import("./types").AIProviderConfig
 ): Promise<Question[]> {
-  const resp = await fetch("/api/detect", {
+  const resp = await authFetch("/api/detect", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image: img.dataUrl, config }),
@@ -106,7 +107,7 @@ export async function ocrQuestion(
   bbox: BBox,
   config?: import("./types").AIProviderConfig
 ): Promise<{ number: string; content: string; kind: "normal" | "passage" | "passage_question" }> {
-  const resp = await fetch("/api/ocr-question", {
+  const resp = await authFetch("/api/ocr-question", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image: img.dataUrl, bbox, config }),
@@ -129,7 +130,7 @@ export async function gradeQuestion(
   passageContent?: string,
   config?: import("./types").AIProviderConfig
 ): Promise<import("./types").GradingResult> {
-  const resp = await fetch("/api/grade", {
+  const resp = await authFetch("/api/grade", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

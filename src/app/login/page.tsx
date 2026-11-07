@@ -11,10 +11,19 @@ function LoginPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const from = searchParams.get("from") || "/"
+  const reason = searchParams.get("reason")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const [requiresPassword, setRequiresPassword] = useState(true)
   const [usingCustomPassword, setUsingCustomPassword] = useState(false)
+
+  useEffect(() => {
+    if (reason === "session-expired") {
+      toast.error("登录已失效，请重新登录", { id: "session-expired" })
+    } else if (reason === "unauthorized") {
+      toast.error("请先登录", { id: "unauthorized" })
+    }
+  }, [reason])
 
   useEffect(() => {
     // 查询是否需要密码；若不需要直接跳转
